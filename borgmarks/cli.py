@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sqlite3
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -136,6 +137,12 @@ def _cmd_organize(args, cfg) -> int:
         if code == 0:
             log.info("Done in %d ms.", int((time.time() - t0) * 1000))
         return code
+
+    if args.apply_firefox:
+        lock_msg = _preflight_firefox_write_locks(firefox_places, favicons_db)
+        if lock_msg:
+            log.error("%s", lock_msg)
+            return _finish(2)
 
     if args.backup_firefox:
         _backup_firefox_profile(profile_dir, state_dir)
@@ -459,6 +466,39 @@ def _resolve_favicons_db_path(profile_or_db: Path, places_db: Path) -> Path:
     if p.is_dir():
         return p / "favicons.sqlite"
     return places_db.parent / "favicons.sqlite"
+
+
+def _preflight_firefox_write_locks(places_db: Path, favicons_db: Path | None) -> str:
+    places_msg = _sqlite_write_lock_error(places_db, label="places.sqlite")
+    if places_msg:
+        return places_msg
+    if favicons_db and favicons_db.exists():
+        favicons_msg = _sqlite_write_lock_error(favicons_db, label="favicons.sqlite")
+        if favicons_msg:
+            return favicons_msg
+    return ""
+
+
+def _sqlite_write_lock_error(db_path: Path, *, label: str, timeout_ms: int = 1200) -> str:
+    conn: sqlite3.Connection | None = None
+    try:
+        uri = f"file:{db_path.as_posix()}?mode=rw"
+        conn = sqlite3.connect(uri, uri=True, timeout=max(0.1, timeout_ms / 1000.0))
+        conn.execute(f"PRAGMA busy_timeout={max(100, int(timeout_ms))}")
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute("ROLLBACK")
+        return ""
+    except sqlite3.OperationalError as e:
+        msg = str(e).strip()
+        lower = msg.lower()
+        if "locked" in lower or "busy" in lower:
+            return f"{label} is locked at {db_path}. Close Firefox and rerun."
+        return f"Cannot write {label} at {db_path}: {msg}"
+    except Exception as e:
+        return f"Cannot access {label} at {db_path}: {e}"
+    finally:
+        if conn is not None:
+            conn.close()
 
 
 def _fallback_assign(bookmarks) -> set[str]:

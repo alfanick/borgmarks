@@ -65,9 +65,10 @@ class FolderView:
 
 
 class PlacesDB:
-    def __init__(self, db_path: Path | str, *, readonly: bool = False):
+    def __init__(self, db_path: Path | str, *, readonly: bool = False, busy_timeout_ms: int = 5000):
         self.db_path = Path(db_path)
         self.readonly = readonly
+        self.busy_timeout_ms = max(0, int(busy_timeout_ms))
         self.conn: sqlite3.Connection | None = None
         self._has_guid = False
         self._has_foreign_count = False
@@ -84,8 +85,11 @@ class PlacesDB:
     def open(self) -> None:
         mode = "ro" if self.readonly else "rw"
         uri = f"file:{self.db_path.as_posix()}?mode={mode}"
-        self.conn = sqlite3.connect(uri, uri=True)
+        timeout_s = max(0.1, self.busy_timeout_ms / 1000.0) if self.busy_timeout_ms > 0 else 0.1
+        self.conn = sqlite3.connect(uri, uri=True, timeout=timeout_s)
         self.conn.row_factory = sqlite3.Row
+        if self.busy_timeout_ms > 0:
+            self.conn.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
         self.conn.execute("PRAGMA foreign_keys = ON")
         self._has_guid = self._has_column("moz_bookmarks", "guid")
         self._has_foreign_count = self._has_column("moz_places", "foreign_count")

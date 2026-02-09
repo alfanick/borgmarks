@@ -137,6 +137,42 @@ def test_cli_supports_firefox_only_mode_without_ios_html(tmp_path: Path):
     assert (profile / "bookmarks.organized.html").exists()
 
 
+def test_cli_apply_firefox_fails_fast_when_places_locked(tmp_path: Path, monkeypatch):
+    profile = tmp_path / "profile"
+    _mk_profile(profile)
+    ios = Path(__file__).parent / "fixtures" / "sample_bookmarks.html"
+
+    called = {"classify": 0}
+
+    def _classify_guard(*_a, **_kw):
+        called["classify"] += 1
+        raise AssertionError("classify_bookmarks should not run when firefox DB is locked")
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("borgmarks.cli.classify_bookmarks", _classify_guard)
+
+    lock_conn = sqlite3.connect(profile / "places.sqlite")
+    lock_conn.execute("BEGIN EXCLUSIVE")
+    try:
+        rc = main(
+            [
+                "organize",
+                "--ios-html",
+                str(ios),
+                "--firefox-profile",
+                str(profile),
+                "--apply-firefox",
+                "--no-fetch",
+            ]
+        )
+    finally:
+        lock_conn.rollback()
+        lock_conn.close()
+
+    assert rc == 2
+    assert called["classify"] == 0
+
+
 def test_cli_skips_openai_when_cache_has_summary_and_categories(tmp_path: Path, monkeypatch):
     profile = tmp_path / "profile"
     _mk_profile(profile)

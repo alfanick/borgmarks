@@ -45,7 +45,7 @@ class Settings:
     openai_model: str = "gpt-5.2"
     openai_timeout_s: int = 900
     openai_jobs: int = 2
-    openai_max_bookmarks: int = 0  # v0.7.10 default: classify all (set >0 to cap)
+    openai_max_bookmarks: int = 0  # v0.8.0 default: classify all (set >0 to cap)
     openai_reclassify: bool = True
     openai_max_output_tokens: int = 100_000_000
     openai_agent_browser: bool = False
@@ -63,7 +63,7 @@ class Settings:
     fetch_timeout_s: int = 15
     fetch_jobs: int = 16
     fetch_max_urls: int = 400
-    fetch_user_agent: str = "borgmarks/0.7.10 (+https://example.invalid)"
+    fetch_user_agent: str = "borgmarks/0.8.0 (+https://example.invalid)"
     fetch_max_bytes: int = 350_000
 
     # Organization rules

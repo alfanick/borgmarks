@@ -10,8 +10,9 @@ from .url_norm import normalize_url
 
 
 class FaviconsDB:
-    def __init__(self, db_path: Path | str):
+    def __init__(self, db_path: Path | str, *, busy_timeout_ms: int = 5000):
         self.db_path = Path(db_path)
+        self.busy_timeout_ms = max(0, int(busy_timeout_ms))
         self.conn: sqlite3.Connection | None = None
 
     def __enter__(self) -> "FaviconsDB":
@@ -23,8 +24,11 @@ class FaviconsDB:
 
     def open(self) -> None:
         uri = f"file:{self.db_path.as_posix()}?mode=rw"
-        self.conn = sqlite3.connect(uri, uri=True)
+        timeout_s = max(0.1, self.busy_timeout_ms / 1000.0) if self.busy_timeout_ms > 0 else 0.1
+        self.conn = sqlite3.connect(uri, uri=True, timeout=timeout_s)
         self.conn.row_factory = sqlite3.Row
+        if self.busy_timeout_ms > 0:
+            self.conn.execute(f"PRAGMA busy_timeout = {self.busy_timeout_ms}")
 
     def close(self) -> None:
         if self.conn is not None:
