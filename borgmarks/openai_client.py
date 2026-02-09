@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from dataclasses import dataclass
 from typing import List, Optional
@@ -61,6 +62,7 @@ def classify_batch(
         timeout_s,
         max_output_tokens,
     )
+    resp = None
     try:
         resp = client.responses.parse(
             model=model,
@@ -71,20 +73,47 @@ def classify_batch(
             text_format=AssignmentBatch,
             max_output_tokens=max_output_tokens,
         )
-    except TypeError:
-        # Compatibility fallback for older SDKs that don't expose max_output_tokens on parse().
-        resp = client.responses.parse(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_payload},
-            ],
-            text_format=AssignmentBatch,
+    except Exception as e:
+        log.warning(
+            "OpenAI parse() failed (%s %s): %s. Retrying without max_output_tokens.",
+            phase_label,
+            batch_label,
+            e,
         )
+        try:
+            # Compatibility fallback for SDK/pydantic combos that fail on max_output_tokens/parse internals.
+            resp = client.responses.parse(
+                model=model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_payload},
+                ],
+                text_format=AssignmentBatch,
+            )
+        except Exception as e2:
+            log.warning(
+                "OpenAI parse() retry failed (%s %s): %s. Falling back to responses.create + manual JSON parse.",
+                phase_label,
+                batch_label,
+                e2,
+            )
+            resp = _create_raw_response(
+                client=client,
+                model=model,
+                system_prompt=system_prompt,
+                user_payload=user_payload,
+                max_output_tokens=max_output_tokens,
+            )
     ms = int((time.time() - t0) * 1000)
-    parsed = resp.output_parsed  # type: ignore[attr-defined]
+    parsed = getattr(resp, "output_parsed", None)
     if parsed is None or not isinstance(parsed, AssignmentBatch):
-        raise ValueError(f"OpenAI parsed response missing/invalid for {phase_label} {batch_label}")
+        log.warning(
+            "OpenAI output_parsed missing/invalid (%s %s). Falling back to raw JSON parsing.",
+            phase_label,
+            batch_label,
+        )
+        raw = getattr(resp, "output_text", "") or ""
+        parsed = _parse_assignment_batch_from_text(raw)
     if not isinstance(parsed.assignments, list):
         raise ValueError(f"OpenAI assignments must be a list for {phase_label} {batch_label}")
     log.info(
@@ -95,3 +124,51 @@ def classify_batch(
         ms,
     )
     return OpenAIResult(parsed=parsed, ms=ms)
+
+
+def _parse_assignment_batch_from_text(raw_text: str) -> AssignmentBatch:
+    raw = (raw_text or "").strip()
+    if not raw:
+        raise ValueError("OpenAI returned empty text; cannot parse AssignmentBatch JSON")
+
+    # Common pattern: fenced JSON output.
+    m = re.search(r"```json\s*(.*?)\s*```", raw, flags=re.IGNORECASE | re.DOTALL)
+    if m:
+        raw = m.group(1).strip()
+
+    try:
+        return AssignmentBatch.model_validate_json(raw)
+    except Exception:
+        # Best-effort extraction of the first JSON object in the text.
+        start = raw.find("{")
+        end = raw.rfind("}")
+        if start >= 0 and end > start:
+            return AssignmentBatch.model_validate_json(raw[start : end + 1])
+        raise
+
+
+def _create_raw_response(
+    *,
+    client,
+    model: str,
+    system_prompt: str,
+    user_payload: str,
+    max_output_tokens: int,
+):
+    try:
+        return client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_payload},
+            ],
+            max_output_tokens=max_output_tokens,
+        )
+    except Exception:
+        return client.responses.create(
+            model=model,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_payload},
+            ],
+        )
