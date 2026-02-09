@@ -161,6 +161,61 @@ def _mk_favicons_db_with_duplicates(path: Path) -> None:
         conn.close()
 
 
+def _mk_favicons_db_with_pk_conflict_shape(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE moz_pages_w_icons (
+              id INTEGER PRIMARY KEY,
+              page_url TEXT,
+              page_url_hash INTEGER
+            );
+            CREATE TABLE moz_icons (
+              id INTEGER PRIMARY KEY,
+              icon_url TEXT,
+              fixed_icon_url_hash INTEGER,
+              width INTEGER,
+              root INTEGER,
+              expire_ms INTEGER,
+              flags INTEGER,
+              data BLOB
+            );
+            CREATE TABLE moz_icons_to_pages (
+              page_id INTEGER NOT NULL,
+              icon_id INTEGER NOT NULL,
+              expire_ms INTEGER,
+              PRIMARY KEY(page_id, icon_id)
+            );
+            """
+        )
+        # Duplicate page URL rows that both point to the same icon.
+        # Naive UPDATE-based dedupe would violate UNIQUE(page_id, icon_id).
+        conn.executemany(
+            "INSERT INTO moz_pages_w_icons(id,page_url,page_url_hash) VALUES(?,?,?)",
+            [
+                (1, "https://example.com/a", 111),
+                (2, "https://example.com/a", 111),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO moz_icons(id,icon_url,fixed_icon_url_hash,width,root,expire_ms,flags,data) VALUES(?,?,?,?,?,?,?,?)",
+            [
+                (10, "https://example.com/favicon.ico", 222, 16, 1, 100, 0, None),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO moz_icons_to_pages(page_id,icon_id,expire_ms) VALUES(?,?,?)",
+            [
+                (1, 10, 111),
+                (2, 10, 222),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_apply_bookmarks_to_firefox_is_idempotent_and_handles_toolbar_menu(tmp_path: Path):
     db_path = tmp_path / "places.sqlite"
     fav_path = tmp_path / "favicons.sqlite"
@@ -256,6 +311,26 @@ def test_apply_bookmarks_dedupes_existing_duplicates_in_places_and_favicons(tmp_
         assert page_cnt == 1
         assert icon_cnt == 1
         assert map_cnt == 1
+
+
+def test_apply_bookmarks_dedupe_handles_mapping_unique_constraint(tmp_path: Path):
+    db_path = tmp_path / "places.sqlite"
+    fav_path = tmp_path / "favicons.sqlite"
+    _mk_db(db_path)
+    _mk_favicons_db_with_pk_conflict_shape(fav_path)
+
+    b = Bookmark(id="b1", title="A", url="https://example.com/a")
+    b.assigned_path = ["Bookmarks Toolbar", "Shopping", "👕 Clothing"]
+
+    s = apply_bookmarks_to_firefox(db_path, [b], favicons_db_path=fav_path, apply_icons=False)
+    assert s.deduped_favicon_rows > 0
+
+    with sqlite3.connect(fav_path) as conn:
+        map_cnt = int(conn.execute("SELECT COUNT(*) FROM moz_icons_to_pages").fetchone()[0])
+        assert map_cnt == 1
+        row = conn.execute("SELECT page_id, icon_id, expire_ms FROM moz_icons_to_pages").fetchone()
+        assert row is not None
+        assert int(row[2]) == 222
 
 
 def test_apply_bookmarks_keeps_links_when_favicon_phase_fails(tmp_path: Path, monkeypatch):

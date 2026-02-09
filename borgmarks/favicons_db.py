@@ -105,6 +105,28 @@ class FaviconsDB:
         c = self._cursor()
         removed = 0
 
+        def _merge_mapping(page_id: int, icon_id: int, expire_ms: int) -> None:
+            # Avoid UNIQUE(page_id, icon_id) violations during page/icon merges:
+            # try insert first, and if pair already exists update expiry to max.
+            try:
+                c.execute(
+                    "INSERT INTO moz_icons_to_pages(page_id, icon_id, expire_ms) VALUES (?, ?, ?)",
+                    (int(page_id), int(icon_id), int(expire_ms)),
+                )
+                return
+            except sqlite3.IntegrityError:
+                pass
+            row = c.execute(
+                "SELECT COALESCE(expire_ms, 0) AS e FROM moz_icons_to_pages WHERE page_id = ? AND icon_id = ? LIMIT 1",
+                (int(page_id), int(icon_id)),
+            ).fetchone()
+            current = int(row["e"]) if row is not None else 0
+            if int(expire_ms) > current:
+                c.execute(
+                    "UPDATE moz_icons_to_pages SET expire_ms = ? WHERE page_id = ? AND icon_id = ?",
+                    (int(expire_ms), int(page_id), int(icon_id)),
+                )
+
         # 1) Merge duplicate page rows by page_url.
         page_dupes = c.execute(
             """
@@ -119,7 +141,13 @@ class FaviconsDB:
             ids = sorted(int(x) for x in str(row["ids"]).split(",") if str(x).strip())
             keep = ids[0]
             for dup in ids[1:]:
-                c.execute("UPDATE moz_icons_to_pages SET page_id = ? WHERE page_id = ?", (keep, dup))
+                maps = c.execute(
+                    "SELECT icon_id, COALESCE(expire_ms, 0) AS expire_ms FROM moz_icons_to_pages WHERE page_id = ?",
+                    (dup,),
+                ).fetchall()
+                for m in maps:
+                    _merge_mapping(page_id=keep, icon_id=int(m["icon_id"]), expire_ms=int(m["expire_ms"] or 0))
+                c.execute("DELETE FROM moz_icons_to_pages WHERE page_id = ?", (dup,))
                 c.execute("DELETE FROM moz_pages_w_icons WHERE id = ?", (dup,))
                 removed += 1
 
@@ -137,7 +165,13 @@ class FaviconsDB:
             ids = sorted(int(x) for x in str(row["ids"]).split(",") if str(x).strip())
             keep = ids[0]
             for dup in ids[1:]:
-                c.execute("UPDATE moz_icons_to_pages SET icon_id = ? WHERE icon_id = ?", (keep, dup))
+                maps = c.execute(
+                    "SELECT page_id, COALESCE(expire_ms, 0) AS expire_ms FROM moz_icons_to_pages WHERE icon_id = ?",
+                    (dup,),
+                ).fetchall()
+                for m in maps:
+                    _merge_mapping(page_id=int(m["page_id"]), icon_id=keep, expire_ms=int(m["expire_ms"] or 0))
+                c.execute("DELETE FROM moz_icons_to_pages WHERE icon_id = ?", (dup,))
                 c.execute("DELETE FROM moz_icons WHERE id = ?", (dup,))
                 removed += 1
 
