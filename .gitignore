@@ -1,5 +1,7 @@
 __pycache__
 *.pyc
+.cache
+.pytest_cache
 in
 out
 Bookmarks.html

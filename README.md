@@ -1,4 +1,4 @@
-# borgmarks 0.0.1
+# borgmarks 0.0.2
 
 AI-assisted bookmark organizer for a Linux + Podman workflow.
 
@@ -9,7 +9,7 @@ AI-assisted bookmark organizer for a Linux + Podman workflow.
 - A Firefox-importable `bookmarks.organized.html`
 - Optional metadata sidecar: `bookmarks.organized.meta.jsonl`
 
-## What it does (v0.0.1)
+## What it does (v0.0.2)
 - Parses the iOS/Safari HTML export.
 - Dedupes URLs (removes common tracking params like `utm_*`, `gclid`, `fbclid`).
 - Visits a configurable subset of URLs to:
@@ -26,7 +26,7 @@ AI-assisted bookmark organizer for a Linux + Podman workflow.
 
 ### Build
 ```bash
-podman build -t borgmarks:0.0.1 -f Containerfile .
+podman build -t borgmarks:0.0.2 -f Containerfile .
 ```
 
 ### Run
@@ -37,7 +37,7 @@ podman run --rm -it \
   -v "$PWD/Bookmarks.html:/in/bookmarks.html:Z" \
   -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
   -v "$PWD/out:/out:Z" \
-  borgmarks:0.0.1 organize \
+  borgmarks:0.0.2 organize \
     --ios-html /in/bookmarks.html \
     --firefox-profile /firefox \
     --backup-firefox \
@@ -56,7 +56,7 @@ Useful knobs:
 - `BORG_FETCH_MAX_URLS`: cap URL fetching.
 - `BORG_FETCH_BACKEND=curl`: uses `curl` + `xargs -P` for parallel fetch (best-effort).
 
-## Notes / limitations (v0.0.1)
+## Notes / limitations (v0.0.2)
 - This version does not modify Firefox’s `places.sqlite`. It only emits an importable HTML file.
 - Some websites block automated fetches. Those are logged and kept.
 

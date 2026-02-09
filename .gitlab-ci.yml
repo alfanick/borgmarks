@@ -6,14 +6,44 @@ stages:
 variables:
   PIP_DISABLE_PIP_VERSION_CHECK: "1"
   PYTHONDONTWRITEBYTECODE: "1"
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
 
 unit_tests:
   stage: test
   image: python:3.12-slim
+  cache:
+    key:
+      files:
+        - requirements.txt
+    paths:
+      - .cache/pip
+    policy: pull-push
   script:
     - python -m pip install --upgrade pip
     - pip install -r requirements.txt
     - pytest -q
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
+
+cli_smoke:
+  stage: test
+  image: python:3.12-slim
+  cache:
+    key:
+      files:
+        - requirements.txt
+    paths:
+      - .cache/pip
+    policy: pull-push
+  script:
+    - python -m pip install --upgrade pip
+    - pip install -r requirements.txt
+    - mkdir -p out-ci
+    - python -m borgmarks organize --ios-html tests/fixtures/sample_bookmarks.html --out out-ci/bookmarks.organized.smoke.html --no-fetch --no-openai
+    - test -s out-ci/bookmarks.organized.smoke.html
+    - grep -q "Bookmarks Toolbar" out-ci/bookmarks.organized.smoke.html
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
@@ -24,19 +54,20 @@ container_build:
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug
     entrypoint: [""]
-  needs: ["unit_tests"]
+  needs: ["unit_tests", "cli_smoke"]
   script:
     - /kaniko/executor --context "${CI_PROJECT_DIR}" --dockerfile "${CI_PROJECT_DIR}/Containerfile" --no-push
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
-    - if: $CI_COMMIT_BRANCH && $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+    - if: $CI_COMMIT_BRANCH
+    - if: $CI_COMMIT_TAG
 
 container_publish:
   stage: publish
   image:
     name: gcr.io/kaniko-project/executor:v1.23.2-debug
     entrypoint: [""]
-  needs: ["unit_tests"]
+  needs: ["unit_tests", "cli_smoke", "container_build"]
   script:
     - mkdir -p /kaniko/.docker
     - |
@@ -45,13 +76,17 @@ container_publish:
       EOF
     - |
       DEST_ARGS="--destination=${CI_REGISTRY_IMAGE}:${CI_COMMIT_SHORT_SHA}"
-      if [ -n "${CI_COMMIT_TAG}" ]; then
-        DEST_ARGS="${DEST_ARGS} --destination=${CI_REGISTRY_IMAGE}:${CI_COMMIT_TAG}"
-      fi
       if [ "${CI_COMMIT_BRANCH}" = "${CI_DEFAULT_BRANCH}" ]; then
         DEST_ARGS="${DEST_ARGS} --destination=${CI_REGISTRY_IMAGE}:latest --destination=${CI_REGISTRY_IMAGE}:${CI_COMMIT_REF_SLUG}"
       fi
+      if [ -n "${CI_COMMIT_TAG}" ]; then
+        DEST_ARGS="${DEST_ARGS} --destination=${CI_REGISTRY_IMAGE}:${CI_COMMIT_TAG}"
+        RAW_TAG="${CI_COMMIT_TAG#v}"
+        if [ "${RAW_TAG}" != "${CI_COMMIT_TAG}" ]; then
+          DEST_ARGS="${DEST_ARGS} --destination=${CI_REGISTRY_IMAGE}:${RAW_TAG}"
+        fi
+      fi
       /kaniko/executor --context "${CI_PROJECT_DIR}" --dockerfile "${CI_PROJECT_DIR}/Containerfile" ${DEST_ARGS}
   rules:
-    - if: $CI_COMMIT_TAG
+    - if: $CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+$/
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

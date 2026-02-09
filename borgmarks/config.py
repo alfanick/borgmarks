@@ -36,14 +36,14 @@ class Settings:
     openai_model: str = "gpt-5.2"
     openai_timeout_s: int = 60
     openai_jobs: int = 2
-    openai_max_bookmarks: int = 800  # v0.0.1 safety cap (override to process all)
+    openai_max_bookmarks: int = 800  # v0.0.2 safety cap (override to process all)
 
     # Fetching
     fetch_backend: str = "httpx"  # httpx | curl
     fetch_timeout_s: int = 15
     fetch_jobs: int = 16
     fetch_max_urls: int = 400
-    fetch_user_agent: str = "borgmarks/0.0.1 (+https://example.invalid)"
+    fetch_user_agent: str = "borgmarks/0.0.2 (+https://example.invalid)"
     fetch_max_bytes: int = 350_000
 
     # Organization rules
