@@ -143,7 +143,7 @@ def _classify_phase(
                 )
             except Exception as e:
                 errors += 1
-                log.error("OpenAI %s batch failed: %s", phase_name, e)
+                log.exception("OpenAI %s batch failed: %s", phase_name, e)
 
     if errors:
         log.warning(

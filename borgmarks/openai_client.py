@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
+import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -17,6 +19,35 @@ try:
 except Exception:
     OpenAI = None  # type: ignore
     _HAS_OPENAI = False
+
+try:
+    import openai._compat as _openai_compat  # type: ignore
+except Exception:
+    _openai_compat = None  # type: ignore
+
+try:
+    import openai._base_client as _openai_base_client  # type: ignore
+except Exception:
+    _openai_base_client = None  # type: ignore
+
+try:
+    import openai._utils._transform as _openai_utils_transform  # type: ignore
+except Exception:
+    _openai_utils_transform = None  # type: ignore
+
+try:
+    import openai._utils._json as _openai_utils_json  # type: ignore
+except Exception:
+    _openai_utils_json = None  # type: ignore
+
+try:
+    from rich.console import Console
+    from rich.json import JSON as RichJSON
+    _HAS_RICH = True
+except Exception:
+    Console = None  # type: ignore
+    RichJSON = None  # type: ignore
+    _HAS_RICH = False
 
 
 class Assignment(BaseModel):
@@ -39,6 +70,7 @@ class OpenAIResult:
 def ensure_openai_available() -> None:
     if not _HAS_OPENAI:
         raise RuntimeError("openai python package not installed. Use container or pip install -r requirements.txt")
+    _patch_openai_model_dump_by_alias()
 
 
 def classify_batch(
@@ -63,6 +95,7 @@ def classify_batch(
         max_output_tokens,
     )
     resp = None
+    raw_json_payload: dict[str, Any] | None = None
     try:
         resp = client.responses.parse(
             model=model,
@@ -97,23 +130,44 @@ def classify_batch(
                 batch_label,
                 e2,
             )
-            resp = _create_raw_response(
+            raw_json_payload = _create_raw_response_json(
                 client=client,
                 model=model,
                 system_prompt=system_prompt,
                 user_payload=user_payload,
                 max_output_tokens=max_output_tokens,
+                phase_label=phase_label,
+                batch_label=batch_label,
             )
     ms = int((time.time() - t0) * 1000)
-    parsed = getattr(resp, "output_parsed", None)
-    if parsed is None or not isinstance(parsed, AssignmentBatch):
+    parsed = getattr(resp, "output_parsed", None) if resp is not None else None
+
+    if raw_json_payload is not None:
+        parsed = _parse_assignment_batch_from_response_json(
+            raw_json_payload,
+            phase_label=phase_label,
+            batch_label=batch_label,
+        )
+    elif parsed is None or not isinstance(parsed, AssignmentBatch):
         log.warning(
-            "OpenAI output_parsed missing/invalid (%s %s). Falling back to raw JSON parsing.",
+            "OpenAI output_parsed missing/invalid (%s %s). Falling back to raw response JSON parsing.",
             phase_label,
             batch_label,
         )
-        raw = getattr(resp, "output_text", "") or ""
-        parsed = _parse_assignment_batch_from_text(raw)
+        raw_json_payload = _create_raw_response_json(
+            client=client,
+            model=model,
+            system_prompt=system_prompt,
+            user_payload=user_payload,
+            max_output_tokens=max_output_tokens,
+            phase_label=phase_label,
+            batch_label=batch_label,
+        )
+        parsed = _parse_assignment_batch_from_response_json(
+            raw_json_payload,
+            phase_label=phase_label,
+            batch_label=batch_label,
+        )
     if not isinstance(parsed.assignments, list):
         raise ValueError(f"OpenAI assignments must be a list for {phase_label} {batch_label}")
     log.info(
@@ -147,28 +201,151 @@ def _parse_assignment_batch_from_text(raw_text: str) -> AssignmentBatch:
         raise
 
 
-def _create_raw_response(
+def _create_raw_response_json(
     *,
     client,
     model: str,
     system_prompt: str,
     user_payload: str,
     max_output_tokens: int,
-):
+    phase_label: str,
+    batch_label: str,
+) -> dict[str, Any]:
+    request_input = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_payload},
+    ]
     try:
-        return client.responses.create(
+        raw_resp = client.responses.with_raw_response.create(
             model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_payload},
-            ],
+            input=request_input,
             max_output_tokens=max_output_tokens,
         )
-    except Exception:
-        return client.responses.create(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_payload},
-            ],
+    except Exception as e:
+        log.warning(
+            "OpenAI raw create() with max_output_tokens failed (%s %s): %s. Retrying without max_output_tokens.",
+            phase_label,
+            batch_label,
+            e,
         )
+        raw_resp = client.responses.with_raw_response.create(
+            model=model,
+            input=request_input,
+        )
+    payload = raw_resp.json()
+    if not isinstance(payload, dict):
+        raise ValueError(f"OpenAI raw response JSON is not an object for {phase_label} {batch_label}")
+    return payload
+
+
+def _parse_assignment_batch_from_response_json(
+    payload: dict[str, Any],
+    *,
+    phase_label: str,
+    batch_label: str,
+) -> AssignmentBatch:
+    raw_text = _extract_output_text(payload)
+    if not raw_text:
+        _debug_log_response_json(
+            title=f"OpenAI response JSON missing output text ({phase_label} {batch_label})",
+            payload=payload,
+        )
+        raise ValueError(f"OpenAI response JSON has no parseable output text for {phase_label} {batch_label}")
+    try:
+        return _parse_assignment_batch_from_text(raw_text)
+    except Exception as e:
+        _debug_log_response_json(
+            title=f"OpenAI response JSON parse failure ({phase_label} {batch_label})",
+            payload=payload,
+        )
+        raise ValueError(f"Failed to parse AssignmentBatch JSON for {phase_label} {batch_label}: {e}") from e
+
+
+def _extract_output_text(payload: dict[str, Any]) -> str:
+    direct = payload.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct
+
+    chunks: List[str] = []
+    output = payload.get("output")
+    if isinstance(output, list):
+        for item in output:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if not isinstance(content, list):
+                continue
+            for part in content:
+                if not isinstance(part, dict):
+                    continue
+                ptype = str(part.get("type", "")).lower()
+                if ptype in {"output_text", "text"}:
+                    text = part.get("text")
+                    if isinstance(text, str):
+                        chunks.append(text)
+                    elif isinstance(text, dict):
+                        value = text.get("value")
+                        if isinstance(value, str):
+                            chunks.append(value)
+    return "\n".join(x for x in chunks if x).strip()
+
+
+def _debug_log_response_json(*, title: str, payload: dict[str, Any]) -> None:
+    pretty = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+    if _HAS_RICH and log.isEnabledFor(logging.DEBUG):
+        try:
+            console = Console(stderr=True)
+            console.print(f"[bold yellow]{title}[/bold yellow]")
+            console.print(RichJSON(pretty))
+            return
+        except Exception:
+            pass
+    log.debug("%s\n%s", title, pretty)
+
+
+_OPENAI_COMPAT_PATCHED = False
+
+
+def _patch_openai_model_dump_by_alias() -> None:
+    global _OPENAI_COMPAT_PATCHED
+    if _OPENAI_COMPAT_PATCHED:
+        return
+    if _openai_compat is None or not hasattr(_openai_compat, "model_dump"):
+        return
+
+    orig = _openai_compat.model_dump
+
+    def _patched_model_dump(
+        model,
+        *,
+        exclude=None,
+        exclude_unset: bool = False,
+        exclude_defaults: bool = False,
+        warnings: bool = True,
+        mode: str = "python",
+        by_alias: bool | None = None,
+    ):
+        # Work around openai-sdk+pydantic(2.8.x) incompatibility where
+        # by_alias=None can trigger:
+        # "'NoneType' object cannot be converted to 'PyBool'".
+        if by_alias is None:
+            by_alias = False
+        return orig(
+            model,
+            exclude=exclude,
+            exclude_unset=exclude_unset,
+            exclude_defaults=exclude_defaults,
+            warnings=warnings,
+            mode=mode,
+            by_alias=by_alias,
+        )
+
+    _openai_compat.model_dump = _patched_model_dump
+    if _openai_base_client is not None and hasattr(_openai_base_client, "model_dump"):
+        _openai_base_client.model_dump = _patched_model_dump
+    if _openai_utils_transform is not None and hasattr(_openai_utils_transform, "model_dump"):
+        _openai_utils_transform.model_dump = _patched_model_dump
+    if _openai_utils_json is not None and hasattr(_openai_utils_json, "model_dump"):
+        _openai_utils_json.model_dump = _patched_model_dump
+    _OPENAI_COMPAT_PATCHED = True
+    log.info("Applied OpenAI SDK compatibility patch for pydantic by_alias handling.")
