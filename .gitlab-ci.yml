@@ -13,22 +13,22 @@ version_guard_main:
   stage: test
   image: alpine:3.20
   script:
-    - apk add --no-cache git
-    - CUR_VERSION="$(tr -d '[:space:]' < VERSION)"
-    - test -n "$CUR_VERSION"
     - |
+      set -eu
+      apk add --no-cache git
+      CUR_VERSION="$(tr -d '[:space:]' < VERSION)"
+      test -n "$CUR_VERSION"
       if [ -z "${CI_COMMIT_BEFORE_SHA}" ] || [ "${CI_COMMIT_BEFORE_SHA}" = "0000000000000000000000000000000000000000" ]; then
         echo "Initial main push: skipping VERSION-change diff check."
         exit 0
       fi
-    - PREV_VERSION="$(git show "${CI_COMMIT_BEFORE_SHA}:VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
-    - test -n "$PREV_VERSION"
-    - |
+      PREV_VERSION="$(git show "${CI_COMMIT_BEFORE_SHA}:VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
+      test -n "$PREV_VERSION"
       if [ "$CUR_VERSION" = "$PREV_VERSION" ]; then
         echo "Push to main rejected: VERSION must change on every main push/merge."
         exit 1
       fi
-    - echo "VERSION changed: ${PREV_VERSION} -> ${CUR_VERSION}"
+      echo "VERSION changed: ${PREV_VERSION} -> ${CUR_VERSION}"
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
