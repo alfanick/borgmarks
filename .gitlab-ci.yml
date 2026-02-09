@@ -141,9 +141,12 @@ container_publish:
       EOF_JSON
     - |
       DEST_ARGS="--destination=${CONTAINER_IMAGE}:${CI_COMMIT_SHORT_SHA}"
+      if [ -n "${CI_COMMIT_BRANCH}" ]; then
+        DEST_ARGS="${DEST_ARGS} --destination=${CONTAINER_IMAGE}:${CI_COMMIT_REF_SLUG} --destination=${CONTAINER_IMAGE}:branch-${CI_COMMIT_REF_SLUG}"
+      fi
       if [ "${CI_COMMIT_BRANCH}" = "${CI_DEFAULT_BRANCH}" ]; then
         CUR_VERSION="$(tr -d '[:space:]' < VERSION)"
-        DEST_ARGS="${DEST_ARGS} --destination=${CONTAINER_IMAGE}:latest --destination=${CONTAINER_IMAGE}:${CI_COMMIT_REF_SLUG} --destination=${CONTAINER_IMAGE}:${CUR_VERSION} --destination=${CONTAINER_IMAGE}:v${CUR_VERSION}"
+        DEST_ARGS="${DEST_ARGS} --destination=${CONTAINER_IMAGE}:latest --destination=${CONTAINER_IMAGE}:${CUR_VERSION} --destination=${CONTAINER_IMAGE}:v${CUR_VERSION}"
       fi
       if [ -n "${CI_COMMIT_TAG}" ]; then
         DEST_ARGS="${DEST_ARGS} --destination=${CONTAINER_IMAGE}:${CI_COMMIT_TAG}"
@@ -155,4 +158,4 @@ container_publish:
       /kaniko/executor --context "${CI_PROJECT_DIR}" --dockerfile "${CI_PROJECT_DIR}/Containerfile" ${DEST_ARGS}
   rules:
     - if: $CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+$/
-    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "push" && $CI_COMMIT_BRANCH
