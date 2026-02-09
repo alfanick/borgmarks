@@ -66,12 +66,12 @@ Use Podman for verification.
 
 Build image:
 ```bash
-podman build -f Containerfile -t bookmarks-sync:test .
+podman build -f Containerfile -t borgmarks:test .
 ```
 
 Run tests in container:
 ```bash
-podman run --rm --entrypoint /bin/sh -v "$PWD":/work -w /work bookmarks-sync:test -lc 'pytest -q'
+podman run --rm --entrypoint /bin/sh -v "$PWD":/work -w /work borgmarks:test -lc 'pytest -q'
 ```
 
 CLI smoke example:
