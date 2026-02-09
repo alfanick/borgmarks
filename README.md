@@ -39,7 +39,7 @@ podman machine start
 
 ```bash
 podman login registry.nakarmamana.ch
-podman pull registry.nakarmamana.ch/alfanick/bookmarks-sync:0.7.1
+podman pull registry.nakarmamana.ch/alfanick/borgmarks:0.7.1
 ```
 
 ### 3. Prepare inputs
@@ -65,7 +65,7 @@ podman run --rm -it \
   -e BORG_OPENAI_JOBS=4 \
   -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
   -v "$PWD/tmp:/tmp:Z" \
-  registry.nakarmamana.ch/alfanick/bookmarks-sync:0.7.1 organize \
+  registry.nakarmamana.ch/alfanick/borgmarks:0.7.1 organize \
     --firefox-profile /firefox \
     --skip-cache
 ```
@@ -82,7 +82,7 @@ podman run --rm -it \
   -v "$PWD/Bookmarks.html:/in/Bookmarks.html:Z" \
   -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
   -v "$PWD/tmp:/tmp:Z" \
-  registry.nakarmamana.ch/alfanick/bookmarks-sync:0.7.1 organize \
+  registry.nakarmamana.ch/alfanick/borgmarks:0.7.1 organize \
     --ios-html /in/Bookmarks.html \
     --firefox-profile /firefox \
     --skip-cache
@@ -104,7 +104,7 @@ podman run --rm -it \
   -v "$PWD/Bookmarks.html:/in/Bookmarks.html:Z" \
   -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
   -v "$PWD/tmp:/tmp:Z" \
-  registry.nakarmamana.ch/alfanick/bookmarks-sync:0.7.1 organize \
+  registry.nakarmamana.ch/alfanick/borgmarks:0.7.1 organize \
     --ios-html /in/Bookmarks.html \
     --firefox-profile /firefox \
     --skip-cache \
