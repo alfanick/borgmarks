@@ -151,3 +151,14 @@ Env examples:
 - `BORG_OPENAI_RECLASSIFY=1`
 - `BORG_OPENAI_AGENT_BROWSER=1` (optional Agent/browser tool usage)
 - `BORG_OPENAI_REASONING_EFFORT=high`
+
+## License
+
+This project is licensed under the MIT License. See `LICENSE`.
+
+## Contributions
+
+- Whole coding is done via `gpt-5.3-thinking`.
+- New features and bug reports are welcome via Issues.
+- Issues are reviewed after maintainer moderation.
+- Pull requests are not accepted.
