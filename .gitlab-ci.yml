@@ -9,6 +9,29 @@ variables:
   PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
   CONTAINER_IMAGE: "${CI_REGISTRY}/alfanick/borgmarks"
 
+version_guard_main:
+  stage: test
+  image: alpine:3.20
+  script:
+    - apk add --no-cache git
+    - CUR_VERSION="$(tr -d '[:space:]' < VERSION)"
+    - test -n "$CUR_VERSION"
+    - |
+      if [ -z "${CI_COMMIT_BEFORE_SHA}" ] || [ "${CI_COMMIT_BEFORE_SHA}" = "0000000000000000000000000000000000000000" ]; then
+        echo "Initial main push: skipping VERSION-change diff check."
+        exit 0
+      fi
+    - PREV_VERSION="$(git show "${CI_COMMIT_BEFORE_SHA}:VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
+    - test -n "$PREV_VERSION"
+    - |
+      if [ "$CUR_VERSION" = "$PREV_VERSION" ]; then
+        echo "Push to main rejected: VERSION must change on every main push/merge."
+        exit 1
+      fi
+    - echo "VERSION changed: ${PREV_VERSION} -> ${CUR_VERSION}"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
 unit_tests:
   stage: test
   image: python:3.12-slim
@@ -70,6 +93,25 @@ container_build:
     - if: $CI_COMMIT_BRANCH
     - if: $CI_COMMIT_TAG
 
+auto_tag_main:
+  stage: publish
+  image: alpine/git:2.45.2
+  needs: ["version_guard_main", "container_build"]
+  script:
+    - CUR_VERSION="$(tr -d '[:space:]' < VERSION)"
+    - TAG="v${CUR_VERSION}"
+    - |
+      if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+        echo "Tag ${TAG} already exists."
+        exit 0
+      fi
+    - git config user.name "Codex CI"
+    - git config user.email "juskowiak+ai@amadeusz.me"
+    - git tag -a "$TAG" -m "Release ${TAG}"
+    - git push "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "$TAG"
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
 container_publish:
   stage: publish
   image:
@@ -79,13 +121,14 @@ container_publish:
   script:
     - mkdir -p /kaniko/.docker
     - |
-      cat > /kaniko/.docker/config.json <<EOF
+      cat > /kaniko/.docker/config.json <<EOF_JSON
       {"auths":{"${CI_REGISTRY}":{"username":"${CI_REGISTRY_USER}","password":"${CI_REGISTRY_PASSWORD}"}}}
-      EOF
+      EOF_JSON
     - |
       DEST_ARGS="--destination=${CONTAINER_IMAGE}:${CI_COMMIT_SHORT_SHA}"
       if [ "${CI_COMMIT_BRANCH}" = "${CI_DEFAULT_BRANCH}" ]; then
-        DEST_ARGS="${DEST_ARGS} --destination=${CONTAINER_IMAGE}:latest --destination=${CONTAINER_IMAGE}:${CI_COMMIT_REF_SLUG}"
+        CUR_VERSION="$(tr -d '[:space:]' < VERSION)"
+        DEST_ARGS="${DEST_ARGS} --destination=${CONTAINER_IMAGE}:latest --destination=${CONTAINER_IMAGE}:${CI_COMMIT_REF_SLUG} --destination=${CONTAINER_IMAGE}:${CUR_VERSION} --destination=${CONTAINER_IMAGE}:v${CUR_VERSION}"
       fi
       if [ -n "${CI_COMMIT_TAG}" ]; then
         DEST_ARGS="${DEST_ARGS} --destination=${CONTAINER_IMAGE}:${CI_COMMIT_TAG}"
@@ -93,21 +136,6 @@ container_publish:
         if [ "${RAW_TAG}" != "${CI_COMMIT_TAG}" ]; then
           DEST_ARGS="${DEST_ARGS} --destination=${CONTAINER_IMAGE}:${RAW_TAG}"
         fi
-      fi
-      CUR_VERSION="$(sed -n 's/^__version__ = \"\\([^\"]*\\)\"/\\1/p' borgmarks/__init__.py | head -n1)"
-      PREV_VERSION=""
-      if [ -n "${CI_COMMIT_BEFORE_SHA}" ] && [ "${CI_COMMIT_BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]; then
-        PREV_INIT="$(
-          wget -qO- \
-            --header="JOB-TOKEN: ${CI_JOB_TOKEN}" \
-            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/repository/files/borgmarks%2F__init__.py/raw?ref=${CI_COMMIT_BEFORE_SHA}" \
-          || true
-        )"
-        PREV_VERSION="$(printf '%s\n' "${PREV_INIT}" | sed -n 's/^__version__ = \"\\([^\"]*\\)\"/\\1/p' | head -n1)"
-      fi
-      if [ -n "${CUR_VERSION}" ] && [ "${CUR_VERSION}" != "${PREV_VERSION}" ]; then
-        DEST_ARGS="${DEST_ARGS} --destination=${CONTAINER_IMAGE}:${CUR_VERSION}"
-        DEST_ARGS="${DEST_ARGS} --destination=${CONTAINER_IMAGE}:v${CUR_VERSION}"
       fi
       /kaniko/executor --context "${CI_PROJECT_DIR}" --dockerfile "${CI_PROJECT_DIR}/Containerfile" ${DEST_ARGS}
   rules:

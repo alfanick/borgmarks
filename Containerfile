@@ -9,6 +9,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
 COPY borgmarks /app/borgmarks
+COPY VERSION /app/VERSION
 COPY README.md /app/README.md
 COPY sample_config.yaml /app/sample_config.yaml
 

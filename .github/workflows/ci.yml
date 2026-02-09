@@ -7,6 +7,8 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*'
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -44,10 +46,46 @@ jobs:
           name: pytest-junit
           path: test-reports/pytest-junit.xml
 
-  docker-build:
-    name: Docker Publish + Release (main)
+  version-guard-main:
+    name: Version Guard (main)
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Ensure VERSION changed on main
+        shell: bash
+        run: |
+          set -euo pipefail
+          CUR_VERSION="$(tr -d '[:space:]' < VERSION)"
+          if [ -z "${CUR_VERSION}" ]; then
+            echo "VERSION is empty"
+            exit 1
+          fi
+          BEFORE='${{ github.event.before }}'
+          if [ "${BEFORE}" = "0000000000000000000000000000000000000000" ]; then
+            echo "Initial push: skipping VERSION-change diff check."
+            exit 0
+          fi
+          PREV_VERSION="$(git show "${BEFORE}:VERSION" 2>/dev/null | tr -d '[:space:]' || true)"
+          if [ -z "${PREV_VERSION}" ]; then
+            echo "Previous VERSION missing; failing to enforce version discipline."
+            exit 1
+          fi
+          if [ "${CUR_VERSION}" = "${PREV_VERSION}" ]; then
+            echo "Push to main rejected: VERSION must change on every main push/merge."
+            exit 1
+          fi
+          echo "VERSION changed: ${PREV_VERSION} -> ${CUR_VERSION}"
+
+  docker-publish-main:
+    name: Docker Publish (main)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: [version-guard-main]
     permissions:
       contents: write
       packages: write
@@ -55,40 +93,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 2
+          fetch-depth: 0
 
-      - name: Extract version and change flag
-        id: ver
-        shell: bash
-        run: |
-          set -euo pipefail
-          CUR_VERSION="$(sed -n 's/^__version__ = \"\([^\"]*\)\"/\1/p' borgmarks/__init__.py | head -n1)"
-          PREV_VERSION=""
-          if git rev-parse --verify HEAD^ >/dev/null 2>&1; then
-            PREV_VERSION="$(git show HEAD^:borgmarks/__init__.py 2>/dev/null | sed -n 's/^__version__ = \"\([^\"]*\)\"/\1/p' | head -n1 || true)"
-          fi
-          SHORT_SHA="$(git rev-parse --short=12 HEAD)"
-          VERSION_CHANGED="false"
-          if [ -n "${CUR_VERSION}" ] && [ "${CUR_VERSION}" != "${PREV_VERSION}" ]; then
-            VERSION_CHANGED="true"
-          fi
-          {
-            echo "version=${CUR_VERSION}"
-            echo "version_changed=${VERSION_CHANGED}"
-            echo "short_sha=${SHORT_SHA}"
-          } >> "$GITHUB_OUTPUT"
-
-      - name: Compute image tags
-        id: tags
+      - name: Compute publish metadata
+        id: meta
         shell: bash
         run: |
           set -euo pipefail
           IMG="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/borgmarks"
-          TAGS="${IMG}:main-${{ steps.ver.outputs.short_sha }},${IMG}:main,${IMG}:latest"
-          if [ "${{ steps.ver.outputs.version_changed }}" = "true" ] && [ -n "${{ steps.ver.outputs.version }}" ]; then
-            TAGS="${TAGS},${IMG}:${{ steps.ver.outputs.version }},${IMG}:v${{ steps.ver.outputs.version }}"
-          fi
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          SHORT_SHA="$(git rev-parse --short=12 HEAD)"
+
+          TAGS="${IMG}:main-${SHORT_SHA},${IMG}:main,${IMG}:latest,${IMG}:v${VERSION},${IMG}:${VERSION}"
+
           echo "image=${IMG}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
           echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -107,13 +126,73 @@ jobs:
           context: .
           file: Containerfile
           push: true
-          tags: ${{ steps.tags.outputs.tags }}
+          tags: ${{ steps.meta.outputs.tags }}
 
-      - name: Create GitHub Release for new version
-        if: steps.ver.outputs.version_changed == 'true' && steps.ver.outputs.version != ''
+      - name: Create and push version tag from main
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v${{ steps.meta.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "Tag ${TAG} already exists on origin."
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "${TAG}"
+
+  docker-publish-tag:
+    name: Docker Publish (tag)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compute publish metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMG="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/borgmarks"
+          REF_TAG="${GITHUB_REF_NAME}"
+          RAW_TAG="${REF_TAG#v}"
+          TAGS="${IMG}:${REF_TAG},${IMG}:${RAW_TAG}"
+          echo "tags=${TAGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push container image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Containerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+
+  release-on-tag:
+    name: GitHub Release (tag)
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create GitHub release from tag
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.ver.outputs.version }}
-          name: v${{ steps.ver.outputs.version }}
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
           target_commitish: ${{ github.sha }}
           generate_release_notes: true

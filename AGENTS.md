@@ -82,12 +82,26 @@ python -m borgmarks organize --ios-html tests/fixtures/sample_bookmarks.html --f
 ## Release/Version Bump Checklist
 
 When bumping version `X.Y.Z`, update at least:
-- `borgmarks/__init__.py`
+- `VERSION`
+- `borgmarks/__init__.py` (must resolve to the same version)
 - `README.md` image tags/examples
 - `borgmarks/config.py` (UA/comment strings)
 - `borgmarks/fetch.py` version comments
 
 Then run full tests (preferably in Podman) before commit/push.
+
+## CI/Release Workflow
+
+- GitLab is authoritative source control.
+- GitHub is a public mirror with Actions CI + GHCR publish.
+- On every push/merge to `main`, CI must fail fast unless `VERSION` changed.
+- `main` is version-only from this point: every merge/push must bump `VERSION`.
+- On `main` version bump, CI should:
+  - publish container images (including `vX.Y.Z` and `X.Y.Z` tags),
+  - create/push git tag `vX.Y.Z` if missing.
+- On git tag push (`vX.Y.Z`), CI should:
+  - publish image tags for that release,
+  - create a proper release entry (GitHub Release / GitLab Release as configured).
 
 ## Git and Commit Rules
 

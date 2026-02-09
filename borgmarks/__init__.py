@@ -1,3 +1,15 @@
 """borgmarks: AI-assisted bookmark organizer for Firefox (and iOS/Safari exports)."""
 
-__version__ = "0.7.1"
+from pathlib import Path
+
+
+def _read_version() -> str:
+    p = Path(__file__).resolve().parents[1] / "VERSION"
+    try:
+        return p.read_text(encoding="utf-8").strip()
+    except Exception:
+        # Safe fallback for unusual packaging/runtime contexts.
+        return "0.7.2"
+
+
+__version__ = _read_version()
