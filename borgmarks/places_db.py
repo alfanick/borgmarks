@@ -439,6 +439,72 @@ class PlacesDB:
         self.conn.commit()
         return tag_ref_id
 
+    def dedupe_bookmark_links_by_url(self) -> int:
+        """Remove duplicate bookmark links and merge duplicate moz_places rows by URL.
+
+        Returns number of removed rows (bookmarks + merged duplicate places).
+        """
+        self._assert_writable()
+        c = self._cursor()
+        removed = 0
+
+        # 1) Merge duplicate moz_places rows that share the same URL.
+        place_dupes = c.execute(
+            """
+            SELECT url, GROUP_CONCAT(id) AS ids
+            FROM moz_places
+            WHERE url IS NOT NULL AND TRIM(url) != ''
+            GROUP BY url
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        for row in place_dupes:
+            ids = sorted(int(x) for x in str(row["ids"]).split(",") if str(x).strip())
+            if len(ids) <= 1:
+                continue
+            keep = ids[0]
+            for dup in ids[1:]:
+                c.execute("UPDATE moz_bookmarks SET fk = ? WHERE fk = ?", (keep, dup))
+                c.execute("DELETE FROM moz_places WHERE id = ?", (dup,))
+                removed += 1
+
+        # 2) Remove duplicate link entries in the same folder with the same fk.
+        same_parent_dupe_ids = c.execute(
+            """
+            SELECT b1.id
+            FROM moz_bookmarks b1
+            JOIN moz_bookmarks b2
+              ON b1.type = 1
+             AND b2.type = 1
+             AND b1.parent = b2.parent
+             AND COALESCE(b1.fk, -1) = COALESCE(b2.fk, -1)
+             AND b1.id > b2.id
+            """
+        ).fetchall()
+        for row in same_parent_dupe_ids:
+            c.execute("DELETE FROM moz_bookmarks WHERE id = ?", (int(row["id"]),))
+            removed += 1
+
+        # 3) Enforce global uniqueness for regular bookmarks (exclude tag copies).
+        links = self.read_all(include_tag_links=False)
+        by_url: Dict[str, List[LinkEntry]] = {}
+        for e in links:
+            key = normalize_url(e.url or "")
+            if not key:
+                continue
+            by_url.setdefault(key, []).append(e)
+        for items in by_url.values():
+            if len(items) <= 1:
+                continue
+            items.sort(key=lambda x: x.id)
+            for dup in items[1:]:
+                c.execute("DELETE FROM moz_bookmarks WHERE id = ?", (dup.id,))
+                removed += 1
+
+        if removed:
+            self.conn.commit()
+        return removed
+
     def recompute_foreign_count(self) -> None:
         self._assert_writable()
         if not self._has_foreign_count:

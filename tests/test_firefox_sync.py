@@ -107,6 +107,60 @@ def _mk_favicons_db(path: Path) -> None:
         conn.close()
 
 
+def _mk_favicons_db_with_duplicates(path: Path) -> None:
+    conn = sqlite3.connect(path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE moz_pages_w_icons (
+              id INTEGER PRIMARY KEY,
+              page_url TEXT,
+              page_url_hash INTEGER
+            );
+            CREATE TABLE moz_icons (
+              id INTEGER PRIMARY KEY,
+              icon_url TEXT,
+              fixed_icon_url_hash INTEGER,
+              width INTEGER,
+              root INTEGER,
+              expire_ms INTEGER,
+              flags INTEGER,
+              data BLOB
+            );
+            CREATE TABLE moz_icons_to_pages (
+              page_id INTEGER NOT NULL,
+              icon_id INTEGER NOT NULL,
+              expire_ms INTEGER
+            );
+            """
+        )
+        conn.executemany(
+            "INSERT INTO moz_pages_w_icons(id,page_url,page_url_hash) VALUES(?,?,?)",
+            [
+                (1, "https://example.com/a", 111),
+                (2, "https://example.com/a", 111),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO moz_icons(id,icon_url,fixed_icon_url_hash,width,root,expire_ms,flags,data) VALUES(?,?,?,?,?,?,?,?)",
+            [
+                (10, "https://example.com/favicon.ico", 222, 16, 1, 123, 0, None),
+                (11, "https://example.com/favicon.ico", 222, 16, 1, 456, 0, None),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO moz_icons_to_pages(page_id,icon_id,expire_ms) VALUES(?,?,?)",
+            [
+                (1, 10, 123),
+                (2, 11, 456),
+                (1, 10, 789),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def test_apply_bookmarks_to_firefox_is_idempotent_and_handles_toolbar_menu(tmp_path: Path):
     db_path = tmp_path / "places.sqlite"
     fav_path = tmp_path / "favicons.sqlite"
@@ -154,3 +208,51 @@ def test_apply_bookmarks_to_firefox_is_idempotent_and_handles_toolbar_menu(tmp_p
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         rows = conn.execute("SELECT COUNT(*) FROM moz_icons_to_pages").fetchone()[0]
         assert int(rows) == 2
+
+
+def test_apply_bookmarks_dedupes_existing_duplicates_in_places_and_favicons(tmp_path: Path):
+    db_path = tmp_path / "places.sqlite"
+    fav_path = tmp_path / "favicons.sqlite"
+    _mk_db(db_path)
+    _mk_favicons_db_with_duplicates(fav_path)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.executemany(
+            "INSERT INTO moz_places(id,url,title,hidden,guid,foreign_count) VALUES(?,?,?,?,?,?)",
+            [
+                (101, "https://example.com/a", "A-dup", 0, "p101", 1),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO moz_bookmarks(id,type,fk,parent,position,title,dateAdded,lastModified,guid) VALUES(?,?,?,?,?,?,?,?,?)",
+            [
+                (21, 1, 101, 2, 1, "A-menu-dup", 0, 0, "l21"),
+                (22, 1, 100, 10, 1, "A-same-folder-dup", 0, 0, "l22"),
+            ],
+        )
+        conn.commit()
+
+    b = Bookmark(id="b1", title="A", url="https://example.com/a")
+    b.assigned_path = ["Bookmarks Toolbar", "Shopping", "👕 Clothing"]
+    b.tags = ["video"]
+    b.meta["icon_uri"] = "https://example.com/favicon.ico"
+
+    s = apply_bookmarks_to_firefox(db_path, [b], favicons_db_path=fav_path)
+    assert s.deduped_bookmark_rows > 0
+    assert s.deduped_favicon_rows > 0
+
+    with PlacesDB(db_path, readonly=True) as db:
+        links = [x for x in db.read_all(include_tag_links=False) if x.url == "https://example.com/a"]
+        assert len(links) == 1
+
+    with sqlite3.connect(fav_path) as conn:
+        page_cnt = int(
+            conn.execute("SELECT COUNT(*) FROM moz_pages_w_icons WHERE page_url = 'https://example.com/a'").fetchone()[0]
+        )
+        icon_cnt = int(
+            conn.execute("SELECT COUNT(*) FROM moz_icons WHERE icon_url = 'https://example.com/favicon.ico'").fetchone()[0]
+        )
+        map_cnt = int(conn.execute("SELECT COUNT(*) FROM moz_icons_to_pages").fetchone()[0])
+        assert page_cnt == 1
+        assert icon_cnt == 1
+        assert map_cnt == 1

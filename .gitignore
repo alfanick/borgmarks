@@ -3,7 +3,13 @@ __pycache__
 .cache
 .pytest_cache
 test-reports
+# Local runtime inputs/outputs (never commit)
 in
 out
+/in/
+/out/
+**/in/
+**/out/
 Bookmarks.html
+Bookmarks*.html
 tmp

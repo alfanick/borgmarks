@@ -98,6 +98,71 @@ class FaviconsDB:
         if fk_rows:
             raise RuntimeError(f"favicons sqlite foreign_key_check failed with {len(fk_rows)} row(s)")
 
+    def dedupe(self) -> int:
+        """Deduplicate pages/icons/mappings and enforce one icon mapping per page."""
+        if not self.supports_schema():
+            return 0
+        c = self._cursor()
+        removed = 0
+
+        # 1) Merge duplicate page rows by page_url.
+        page_dupes = c.execute(
+            """
+            SELECT page_url, GROUP_CONCAT(id) AS ids
+            FROM moz_pages_w_icons
+            WHERE page_url IS NOT NULL AND TRIM(page_url) != ''
+            GROUP BY page_url
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        for row in page_dupes:
+            ids = sorted(int(x) for x in str(row["ids"]).split(",") if str(x).strip())
+            keep = ids[0]
+            for dup in ids[1:]:
+                c.execute("UPDATE moz_icons_to_pages SET page_id = ? WHERE page_id = ?", (keep, dup))
+                c.execute("DELETE FROM moz_pages_w_icons WHERE id = ?", (dup,))
+                removed += 1
+
+        # 2) Merge duplicate icon rows by icon_url.
+        icon_dupes = c.execute(
+            """
+            SELECT icon_url, GROUP_CONCAT(id) AS ids
+            FROM moz_icons
+            WHERE icon_url IS NOT NULL AND TRIM(icon_url) != ''
+            GROUP BY icon_url
+            HAVING COUNT(*) > 1
+            """
+        ).fetchall()
+        for row in icon_dupes:
+            ids = sorted(int(x) for x in str(row["ids"]).split(",") if str(x).strip())
+            keep = ids[0]
+            for dup in ids[1:]:
+                c.execute("UPDATE moz_icons_to_pages SET icon_id = ? WHERE icon_id = ?", (keep, dup))
+                c.execute("DELETE FROM moz_icons WHERE id = ?", (dup,))
+                removed += 1
+
+        # 3) Rebuild mapping table to one icon per page (first icon_id, max expiry).
+        canon = c.execute(
+            """
+            SELECT page_id, MIN(icon_id) AS icon_id, MAX(COALESCE(expire_ms, 0)) AS expire_ms
+            FROM moz_icons_to_pages
+            GROUP BY page_id
+            """
+        ).fetchall()
+        before = int(c.execute("SELECT COUNT(*) FROM moz_icons_to_pages").fetchone()[0])
+        c.execute("DELETE FROM moz_icons_to_pages")
+        if canon:
+            c.executemany(
+                "INSERT INTO moz_icons_to_pages(page_id, icon_id, expire_ms) VALUES (?, ?, ?)",
+                [(int(r["page_id"]), int(r["icon_id"]), int(r["expire_ms"])) for r in canon],
+            )
+        after = int(c.execute("SELECT COUNT(*) FROM moz_icons_to_pages").fetchone()[0])
+        removed += max(0, before - after)
+
+        if removed:
+            self.conn.commit()
+        return removed
+
     def _get_or_create_page_id(
         self,
         c: sqlite3.Cursor,

@@ -360,12 +360,14 @@ def _cmd_organize(args, cfg) -> int:
         try:
             sync = apply_bookmarks_to_firefox(firefox_places, bookmarks, favicons_db_path=favicons_db)
             log.info(
-                "Applied to Firefox DB: touched=%d added=%d moved=%d tagged=%d icons=%d",
+                "Applied to Firefox DB: touched=%d added=%d moved=%d tagged=%d icons=%d deduped_bookmarks=%d deduped_favicons=%d",
                 sync.touched_links,
                 sync.added_links,
                 sync.moved_links,
                 sync.tagged_links,
                 sync.icon_links,
+                sync.deduped_bookmark_rows,
+                sync.deduped_favicon_rows,
             )
         except Exception as e:
             log.error("Failed to apply to Firefox places.sqlite: %s", e)

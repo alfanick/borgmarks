@@ -30,6 +30,8 @@ class SyncStats:
     tagged_links: int = 0
     touched_links: int = 0
     icon_links: int = 0
+    deduped_bookmark_rows: int = 0
+    deduped_favicon_rows: int = 0
 
 
 def apply_bookmarks_to_firefox(
@@ -46,6 +48,10 @@ def apply_bookmarks_to_firefox(
             candidate = stack.enter_context(FaviconsDB(favicons_db_path))
             if candidate.supports_schema():
                 favicon_db = candidate
+
+        stats.deduped_bookmark_rows = db.dedupe_bookmark_links_by_url()
+        if favicon_db is not None:
+            stats.deduped_favicon_rows = favicon_db.dedupe()
 
         existing = db.read_all(include_tag_links=False)
         existing_by_url: Dict[str, int] = {}
