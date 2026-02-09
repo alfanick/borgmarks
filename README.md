@@ -1,95 +1,128 @@
 # borgmarks 0.5.0
 
-AI-assisted bookmark organizer for a Linux + Podman workflow.
+Organize bookmarks from iOS/iPadOS Safari + Firefox with OpenAI, then either:
+- generate an importable Firefox HTML file (safe mode), or
+- apply folders/tags/bookmarks directly to Firefox `places.sqlite` (optional).
 
-**Input**
-- An iOS/iPadOS Safari bookmarks export in “Netscape bookmark HTML” format (like `Bookmarks.html`).
-- Optional Firefox profile (`places.sqlite`) bookmarks, merged at ingestion time with equal priority.
-- Optional live page data fetched from each URL (status, redirect target, title, description, snippet, HTML).
-- Optional SQLite cache (if `--firefox-profile` is set: `<profile>/borg_cache.sqlite`, otherwise `out/bookmarks-cache.sqlite`).
+**Fastest safe path:** run container, generate `bookmarks.organized.html`, import it in Firefox.
 
-**Output**
-- `<firefox-profile>/bookmarks.organized.html`
-- Optional metadata sidecar: `<firefox-profile>/bookmarks.organized.meta.jsonl`
+## Quick Start (End User)
 
-## What it does (v0.5.0)
-- Parses the iOS/Safari HTML export.
-- Dedupes URLs (removes common tracking params like `utm_*`, `gclid`, `fbclid`).
-- Visits a configurable subset of URLs to:
-  - verify they still exist (HTTP status)
-  - extract page `<title>`, meta description, and a short snippet
-- Uses the OpenAI **Responses API** with **Structured Outputs** to create:
-  - a folder path per bookmark (max depth 4)
-  - short tags (Firefox supports the `TAGS` attribute)
-- Runs classification in two passes: classify, then reclassify using prior classification + summary.
-- Reclassification is conservative by default to avoid noisy lateral moves between similar folders.
-- Enforces: **≤ 20 links per leaf folder** by auto-splitting big folders.
-- Removes exact and near-duplicate links after redirect normalization.
-- Adds `[PL]`, `[DE]`, etc. prefixes to non-English titles (**English is unprefixed**).
-- Writes a Firefox-importable HTML with a real **Bookmarks Toolbar** folder.
+### 1. Install Podman
 
-## Quick start (Podman)
-
-### Build
+Linux (Ubuntu/Debian):
 ```bash
-podman build -t borgmarks:0.5.0 -f Containerfile .
+sudo apt update
+sudo apt install -y podman
 ```
 
-### Run
+Linux (Fedora):
+```bash
+sudo dnf install -y podman
+```
+
+macOS:
+```bash
+brew install podman
+podman machine init
+podman machine start
+```
+
+Windows (PowerShell):
+```powershell
+winget install RedHat.Podman
+podman machine init
+podman machine start
+```
+
+### 2. Login and pull image
+
+```bash
+podman login registry.nakarmamana.ch
+podman pull registry.nakarmamana.ch/alfanick/bookmarks-sync:0.5.0
+```
+
+### 3. Prepare inputs
+
+- Export Safari bookmarks from iOS/iPadOS to `Bookmarks.html`.
+- Find Firefox profile path (directory containing `places.sqlite`).
+- Close Firefox before running.
+
+### 4. Run (safe mode: does **not** edit `places.sqlite`)
+
 ```bash
 export OPENAI_API_KEY="sk-..."
+mkdir -p tmp
+
 podman run --rm -it \
   -e OPENAI_API_KEY \
-  -v "$PWD/Bookmarks.html:/in/bookmarks.html:Z" \
+  -e BORG_OPENAI_JOBS=4 \
+  -v "$PWD/Bookmarks.html:/in/Bookmarks.html:Z" \
   -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
   -v "$PWD/tmp:/tmp:Z" \
-  borgmarks:0.5.0 organize \
-    --ios-html /in/bookmarks.html \
+  registry.nakarmamana.ch/alfanick/bookmarks-sync:0.5.0 organize \
+    --ios-html /in/Bookmarks.html \
     --firefox-profile /firefox \
-    --backup-firefox
+    --skip-cache
 ```
 
-Import in Firefox:
-- Bookmarks → Manage bookmarks → Import and Backup → Import Bookmarks from HTML…
+Result files are written into Firefox profile:
+- `/firefox/bookmarks.organized.html`
+- `/firefox/bookmarks.organized.meta.jsonl`
+- `/firefox/borg_cache.sqlite`
 
-Optional direct Firefox DB apply (bookmarks/folders/tags only; no history writes):
+### 5. Optional: apply directly to Firefox DB
+
+This modifies bookmarks/folders/tags in `places.sqlite` (history is not touched):
+
 ```bash
 podman run --rm -it \
   -e OPENAI_API_KEY \
-  -v "$PWD/Bookmarks.html:/in/bookmarks.html:Z" \
+  -e BORG_OPENAI_JOBS=4 \
+  -v "$PWD/Bookmarks.html:/in/Bookmarks.html:Z" \
   -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
   -v "$PWD/tmp:/tmp:Z" \
-  borgmarks:0.5.0 organize \
-    --ios-html /in/bookmarks.html \
+  registry.nakarmamana.ch/alfanick/bookmarks-sync:0.5.0 organize \
+    --ios-html /in/Bookmarks.html \
     --firefox-profile /firefox \
+    --skip-cache \
     --apply-firefox
 ```
-Backups of `places.sqlite` are always written to `/tmp` at run begin/end (bind mount `/tmp` to persist them on host).
 
-## Configuration
-- Use env vars (best for containers). See `.env.example`.
-- Or YAML: `--config sample_config.yaml`
+`places.sqlite` backups are always created at begin/end in `/tmp`:
+- `/tmp/borgmarks-places-begin-*.sqlite`
+- `/tmp/borgmarks-places-end-*.sqlite`
 
-Useful knobs:
-- `BORG_OPENAI_MAX_BOOKMARKS`: default `0` (classify all). Set `>0` to cap.
-- `BORG_OPENAI_TIMEOUT_S`: default is 900 (15 minutes).
-- `BORG_OPENAI_RECLASSIFY=1`: enable pass-2 refinement.
-- `BORG_OPENAI_AGENT_BROWSER=1`: optional OpenAI web search/browser tool during classify/emoji enrichment.
-- `BORG_OPENAI_REASONING_EFFORT=high`: low|medium|high for OpenAI reasoning mode.
-- `BORG_RECLASSIFY_CONSERVATIVE=1`: keep reclassify conservative (default).
-- `BORG_RECLASSIFY_MIN_FOLDER_GAIN=2`: minimum folder-size gain required for same-top reclass moves.
-- `BORG_FETCH_MAX_URLS`: cap URL fetching.
-- `BORG_FETCH_BACKEND=curl`: uses `curl` + `xargs -P` for parallel fetch (best-effort).
-- `--skip-cache`: recreate SQLite cache and ignore old cache entries.
+## What It Does
 
-## Notes / limitations (v0.5.0)
-- By default this emits an importable HTML file; with `--apply-firefox` it also updates Firefox bookmarks/folders/tags in `places.sqlite` (history is not touched).
-- Some websites block automated fetches. Those are logged and kept.
+- Merges iOS Safari export + Firefox bookmarks as input.
+- Deduplicates URLs (exact + near duplicates).
+- Follows redirects and preserves link parity (excluding non-200 for sanity check).
+- Classifies into folders + tags with OpenAI (conservative reclassification).
+- Adds/keeps folder emojis and bookmark icons:
+  - favicon when available
+  - emoji icon fallback when favicon is missing
+- Keeps cache in Firefox profile: `borg_cache.sqlite`.
 
-## Development
-```bash
-python -m venv .venv
-. .venv/bin/activate
-pip install -r requirements.txt
-pytest -q
-```
+## Stability Rules (Reruns)
+
+- Reuses cache aggressively unless `--skip-cache` is used.
+- Avoids moving bookmarks unless model has a strong reason.
+- Reuses existing folders whenever possible.
+- Keeps folder ordering deterministic and groups similar folders together.
+- Sorts leaf links by freshness (newest first).
+
+## Useful Options
+
+- `--skip-cache`: rebuild cache from scratch.
+- `--no-fetch`: skip website fetch.
+- `--no-openai`: skip OpenAI classification.
+- `--apply-firefox`: write to `places.sqlite` bookmarks/tags/folders.
+- `--backup-firefox`: extra profile backup in profile directory.
+- `--log-level DEBUG`: verbose logs.
+
+Env examples:
+- `BORG_OPENAI_TIMEOUT_S=900`
+- `BORG_OPENAI_RECLASSIFY=1`
+- `BORG_OPENAI_AGENT_BROWSER=1` (optional Agent/browser tool usage)
+- `BORG_OPENAI_REASONING_EFFORT=high`
