@@ -34,16 +34,18 @@ def _env_str(name: str, default: str) -> str:
 class Settings:
     # OpenAI
     openai_model: str = "gpt-5.2"
-    openai_timeout_s: int = 60
+    openai_timeout_s: int = 900
     openai_jobs: int = 2
-    openai_max_bookmarks: int = 800  # v0.0.3 safety cap (override to process all)
+    openai_max_bookmarks: int = 0  # v0.0.5 default: classify all (set >0 to cap)
+    openai_reclassify: bool = True
+    openai_max_output_tokens: int = 100_000_000
 
     # Fetching
     fetch_backend: str = "httpx"  # httpx | curl
     fetch_timeout_s: int = 15
     fetch_jobs: int = 16
     fetch_max_urls: int = 400
-    fetch_user_agent: str = "borgmarks/0.0.3 (+https://example.invalid)"
+    fetch_user_agent: str = "borgmarks/0.0.5 (+https://example.invalid)"
     fetch_max_bytes: int = 350_000
 
     # Organization rules
@@ -71,6 +73,8 @@ class Settings:
         s.openai_timeout_s = _env_int("BORG_OPENAI_TIMEOUT_S", s.openai_timeout_s)
         s.openai_jobs = _env_int("BORG_OPENAI_JOBS", s.openai_jobs)
         s.openai_max_bookmarks = _env_int("BORG_OPENAI_MAX_BOOKMARKS", s.openai_max_bookmarks)
+        s.openai_reclassify = _env_bool("BORG_OPENAI_RECLASSIFY", s.openai_reclassify)
+        s.openai_max_output_tokens = _env_int("BORG_OPENAI_MAX_OUTPUT_TOKENS", s.openai_max_output_tokens)
 
         s.fetch_backend = _env_str("BORG_FETCH_BACKEND", s.fetch_backend)
         s.fetch_timeout_s = _env_int("BORG_FETCH_TIMEOUT_S", s.fetch_timeout_s)

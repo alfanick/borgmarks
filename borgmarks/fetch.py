@@ -22,6 +22,7 @@ class FetchResult:
     title: Optional[str]
     description: Optional[str]
     snippet: Optional[str]
+    html: Optional[str]
     fetch_ms: int
     error: Optional[str] = None
 
@@ -39,7 +40,7 @@ def fetch_many(
 
     backends:
       - httpx: fetch body (title/description/snippet)
-      - curl: subprocess-based, status + final_url only (v0.0.3)
+      - curl: subprocess-based, status + final_url only (v0.0.5)
     """
     backend = backend.lower()
     if backend == "curl":
@@ -74,6 +75,7 @@ def _fetch_many_httpx(
                     title=title,
                     description=desc,
                     snippet=snippet,
+                    html=_decode_html(content),
                     fetch_ms=ms,
                     error=None,
                 )
@@ -86,6 +88,7 @@ def _fetch_many_httpx(
                 title=None,
                 description=None,
                 snippet=None,
+                html=None,
                 fetch_ms=ms,
                 error=str(e),
             )
@@ -108,7 +111,7 @@ def _fetch_many_curl(
     """curl backend (subprocess + threadpool).
 
     Notes:
-    - This backend only captures status + final_url (no page snippet) in v0.0.3.
+    - This backend only captures status + final_url (no page snippet) in v0.0.5.
     - It's mostly here for compatibility with environments where httpx is blocked.
     """
     out: Dict[str, FetchResult] = {}
@@ -137,7 +140,7 @@ def _fetch_many_curl(
             if r.returncode != 0:
                 return url, FetchResult(
                     ok=False, status=None, final_url=None,
-                    title=None, description=None, snippet=None,
+                    title=None, description=None, snippet=None, html=None,
                     fetch_ms=ms, error=(r.stderr.strip() or f"curl rc={r.returncode}")
                 )
             parts = (r.stdout or "").split("\t", 1)
@@ -149,7 +152,7 @@ def _fetch_many_curl(
                 ok=ok,
                 status=status,
                 final_url=eff or None,
-                title=None, description=None, snippet=None,
+                title=None, description=None, snippet=None, html=None,
                 fetch_ms=ms,
                 error=None if ok else "http_status_not_ok",
             )
@@ -157,7 +160,7 @@ def _fetch_many_curl(
             ms = int((time.time() - t0) * 1000)
             return url, FetchResult(
                 ok=False, status=None, final_url=None,
-                title=None, description=None, snippet=None,
+                title=None, description=None, snippet=None, html=None,
                 fetch_ms=ms, error=str(e)
             )
 
@@ -192,3 +195,12 @@ def _extract_meta(content: bytes) -> Tuple[Optional[str], Optional[str], Optiona
         return title, desc, snippet
     except Exception:
         return None, None, None
+
+
+def _decode_html(content: bytes) -> Optional[str]:
+    if not content:
+        return None
+    try:
+        return content.decode("utf-8", errors="replace")
+    except Exception:
+        return None

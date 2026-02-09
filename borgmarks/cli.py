@@ -5,10 +5,12 @@ import argparse
 import json
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, List
 
 from . import __version__
+from .cache_sqlite import CacheEntry, init_cache, load_entries, upsert_entries
 from .classify import classify_bookmarks
 from .config import load_settings
 from .domain_lang import domain_of, guess_lang
@@ -53,6 +55,7 @@ def main(argv: List[str] | None = None) -> int:
     org.add_argument("--no-color", action="store_true", help="Disable colored logging.")
     org.add_argument("--no-fetch", action="store_true", help="Skip website fetching (faster, less accurate).")
     org.add_argument("--no-openai", action="store_true", help="Skip OpenAI classification (fallback bucketing).")
+    org.add_argument("--skip-cache", action="store_true", help="Recreate SQLite cache and skip reading existing cache data.")
     org.add_argument("--dry-run", action="store_true", help="Run pipeline but do not write output file.")
     org.add_argument("--backup-firefox", action="store_true", help="If firefox-profile is given, back up places.sqlite to state-dir.")
 
@@ -79,6 +82,8 @@ def _cmd_organize(args, cfg) -> int:
     out_path = Path(args.out)
     state_dir = Path(args.state_dir) if args.state_dir else out_path.parent
     state_dir.mkdir(parents=True, exist_ok=True)
+    cache_db = state_dir / "bookmarks-cache.sqlite"
+    init_cache(cache_db, recreate=args.skip_cache)
 
     if args.firefox_profile and args.backup_firefox:
         _backup_firefox_profile(Path(args.firefox_profile), state_dir)
@@ -107,11 +112,26 @@ def _cmd_organize(args, cfg) -> int:
     bookmarks = deduped
     if dupes:
         log.info("Deduped %d duplicates (set BORG_KEEP_DUPLICATES=1 to keep).", dupes)
-    sanity_input = list(bookmarks)
+
+    # Cache prefill (unless explicitly skipped)
+    if not args.skip_cache:
+        cache_keys = [_url_identity(b.url) for b in bookmarks]
+        cached = load_entries(cache_db, cache_keys)
+        hits = 0
+        for b in bookmarks:
+            c = cached.get(_url_identity(b.url))
+            if not c:
+                continue
+            _apply_cache_entry(b, c)
+            hits += 1
+        if hits:
+            log.info("Loaded %d bookmark entries from SQLite cache: %s", hits, cache_db)
 
     # Fetch subset (visit websites)
     if not args.no_fetch:
-        urls = [b.url for b in bookmarks[: cfg.fetch_max_urls]]
+        fetch_scope = bookmarks[: cfg.fetch_max_urls]
+        fetch_targets = [b for b in fetch_scope if b.http_status is None]
+        urls = [b.url for b in fetch_targets]
         log.info("Fetching %d/%d URLs (backend=%s, jobs=%d)...", len(urls), len(bookmarks), cfg.fetch_backend, cfg.fetch_jobs)
         try:
             results = fetch_many(
@@ -122,7 +142,9 @@ def _cmd_organize(args, cfg) -> int:
                 user_agent=cfg.fetch_user_agent,
                 max_bytes=cfg.fetch_max_bytes,
             )
-            for b in bookmarks[: cfg.fetch_max_urls]:
+            fetched_cache_rows: List[CacheEntry] = []
+            for b in fetch_targets:
+                original_url = b.url
                 r = results.get(b.url)
                 if not r:
                     continue
@@ -132,11 +154,34 @@ def _cmd_organize(args, cfg) -> int:
                 b.page_title = r.title
                 b.page_description = r.description
                 b.content_snippet = r.snippet
+                b.page_html = r.html
                 b.meta["fetch_ms"] = str(r.fetch_ms)
+                b.meta["visited_at"] = _utc_now_iso()
+                fetched_cache_rows.extend(_cache_entries_for_bookmark(b, original_url=original_url))
+            if fetched_cache_rows:
+                upsert_entries(cache_db, fetched_cache_rows)
+                log.info("Stored %d fetched bookmark entries in SQLite cache.", len(fetched_cache_rows))
         except Exception as e:
             log.warning("Fetch phase failed: %s", e)
     else:
         log.info("Skipping fetch phase (--no-fetch).")
+
+    # Replace original URLs with redirected finals for downstream processing.
+    for b in bookmarks:
+        if b.final_url:
+            b.url = normalize_url(b.final_url)
+            b.domain = domain_of(b.url)
+            b.lang = guess_lang(b.url, b.title)
+
+    # Near-duplicate cleanup (after redirects are known).
+    if not cfg.keep_duplicates:
+        before = len(bookmarks)
+        bookmarks = _dedupe_near_duplicates(bookmarks)
+        near_dupes = before - len(bookmarks)
+        if near_dupes:
+            log.info("Removed %d near-duplicates after redirect normalization.", near_dupes)
+
+    sanity_input = list(bookmarks)
 
     # Pre-summary from meta/snippet
     for b in bookmarks:
@@ -158,14 +203,14 @@ def _cmd_organize(args, cfg) -> int:
     # Dead links handling
     if not cfg.drop_dead:
         for b in bookmarks:
-            if b.fetched_ok is False or (b.http_status is not None and b.http_status >= 400):
+            if _is_strictly_inaccessible(b.http_status):
                 b.assigned_path = ["Archive", "🪦 Dead links"]
     else:
         before = len(bookmarks)
-        bookmarks = [b for b in bookmarks if not (b.fetched_ok is False or (b.http_status is not None and b.http_status >= 400))]
+        bookmarks = [b for b in bookmarks if not _is_strictly_inaccessible(b.http_status)]
         dropped = before - len(bookmarks)
         if dropped:
-            log.warning("Dropped %d dead links (BORG_DROP_DEAD=0 to keep in Archive).", dropped)
+            log.warning("Dropped %d strictly inaccessible links (BORG_DROP_DEAD=0 to keep in Archive).", dropped)
 
     # Language prefix for non-English (English = no prefix)
     if cfg.prefix_non_english:
@@ -216,6 +261,9 @@ def _cmd_organize(args, cfg) -> int:
         except Exception as e:
             log.error("Failed to write output HTML: %s", e)
             return 2
+
+    # Store current bookmark state in cache (including categories/tags and summaries).
+    upsert_entries(cache_db, [_cache_entry_from_bookmark(b) for b in bookmarks])
 
     # End-of-run guard: the pipeline must preserve unique links, except non-200.
     if not _sanity_check_unique_link_counts(sanity_input, bookmarks):
@@ -288,5 +336,121 @@ def _counted_unique_urls(bookmarks: Iterable) -> set[str]:
         # Non-200 links are excluded from this parity check by design.
         if b.http_status is not None and b.http_status != 200:
             continue
-        out.add(normalize_url(b.final_url or b.url))
+        out.add(_url_identity(b.final_url or b.url))
     return out
+
+
+def _url_identity(url: str) -> str:
+    norm = normalize_url(url or "")
+    if not norm:
+        return norm
+    # "Close enough" duplicate key: host normalization + path normalization.
+    from urllib.parse import parse_qsl, urlencode, urlparse
+
+    p = urlparse(norm)
+    host = (p.netloc or "").lower()
+    for prefix in ("www.", "m."):
+        if host.startswith(prefix):
+            host = host[len(prefix):]
+
+    path = p.path or "/"
+    while "//" in path:
+        path = path.replace("//", "/")
+    if path != "/" and path.endswith("/"):
+        path = path[:-1]
+    for suffix in ("/index.html", "/index.htm", "/index.php"):
+        if path.lower().endswith(suffix):
+            path = path[: -len(suffix)] or "/"
+
+    query_items = parse_qsl(p.query, keep_blank_values=True)
+    query = urlencode(sorted(query_items), doseq=True)
+    if query:
+        return f"{host}{path}?{query}"
+    return f"{host}{path}"
+
+
+def _dedupe_near_duplicates(bookmarks: List) -> List:
+    seen = set()
+    out = []
+    for b in bookmarks:
+        key = _url_identity(b.final_url or b.url)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(b)
+    return out
+
+
+def _is_strictly_inaccessible(status_code: int | None) -> bool:
+    if status_code is None:
+        return False
+    return status_code in {401, 403, 404, 410, 451}
+
+
+def _apply_cache_entry(b, c: CacheEntry) -> None:
+    b.http_status = c.status_code
+    b.final_url = c.final_url
+    b.page_title = c.page_title
+    b.page_description = c.page_description
+    b.content_snippet = c.content_snippet
+    b.page_html = c.html
+    if c.summary:
+        b.summary = c.summary
+    if c.tags:
+        b.tags = c.tags
+    if c.categories:
+        b.assigned_path = c.categories
+    if c.visited_at:
+        b.meta["visited_at"] = c.visited_at
+    if c.final_url:
+        b.url = normalize_url(c.final_url)
+        b.domain = domain_of(b.url)
+        b.lang = guess_lang(b.url, b.title)
+
+
+def _cache_entry_from_bookmark(b) -> CacheEntry:
+    return CacheEntry(
+        cache_key=_url_identity(b.final_url or b.url),
+        url=normalize_url(b.url),
+        final_url=normalize_url(b.final_url) if b.final_url else None,
+        title=b.assigned_title or b.title,
+        tags=b.tags or [],
+        categories=b.assigned_path or [],
+        status_code=b.http_status,
+        visited_at=b.meta.get("visited_at"),
+        summary=(b.summary or "")[:4000] or None,
+        html=b.page_html,
+        page_title=b.page_title,
+        page_description=b.page_description,
+        content_snippet=b.content_snippet,
+    )
+
+
+def _cache_entries_for_bookmark(b, *, original_url: str | None = None) -> List[CacheEntry]:
+    base = _cache_entry_from_bookmark(b)
+    out = [base]
+    if original_url:
+        orig_key = _url_identity(original_url)
+        if orig_key and orig_key != base.cache_key:
+            out.append(
+                CacheEntry(
+                    cache_key=orig_key,
+                    url=normalize_url(original_url),
+                    final_url=base.final_url,
+                    title=base.title,
+                    tags=base.tags,
+                    categories=base.categories,
+                    status_code=base.status_code,
+                    visited_at=base.visited_at,
+                    summary=base.summary,
+                    html=base.html,
+                    page_title=base.page_title,
+                    page_description=base.page_description,
+                    content_snippet=base.content_snippet,
+                )
+            )
+    return out
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()

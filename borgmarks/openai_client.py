@@ -44,20 +44,54 @@ def classify_batch(
     *,
     model: str,
     timeout_s: int,
+    max_output_tokens: int,
     system_prompt: str,
     user_payload: str,
+    phase_label: str,
+    batch_label: str,
 ) -> OpenAIResult:
     ensure_openai_available()
     t0 = time.time()
     client = OpenAI(timeout=timeout_s)
-    resp = client.responses.parse(
-        model=model,
-        input=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_payload},
-        ],
-        text_format=AssignmentBatch,
+    log.info(
+        "OpenAI request start (%s %s): model=%s timeout_s=%d max_output_tokens=%d",
+        phase_label,
+        batch_label,
+        model,
+        timeout_s,
+        max_output_tokens,
     )
+    try:
+        resp = client.responses.parse(
+            model=model,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_payload},
+            ],
+            text_format=AssignmentBatch,
+            max_output_tokens=max_output_tokens,
+        )
+    except TypeError:
+        # Compatibility fallback for older SDKs that don't expose max_output_tokens on parse().
+        resp = client.responses.parse(
+            model=model,
+            input=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_payload},
+            ],
+            text_format=AssignmentBatch,
+        )
     ms = int((time.time() - t0) * 1000)
     parsed = resp.output_parsed  # type: ignore[attr-defined]
+    if parsed is None or not isinstance(parsed, AssignmentBatch):
+        raise ValueError(f"OpenAI parsed response missing/invalid for {phase_label} {batch_label}")
+    if not isinstance(parsed.assignments, list):
+        raise ValueError(f"OpenAI assignments must be a list for {phase_label} {batch_label}")
+    log.info(
+        "OpenAI request done (%s %s): assignments=%d elapsed_ms=%d",
+        phase_label,
+        batch_label,
+        len(parsed.assignments),
+        ms,
+    )
     return OpenAIResult(parsed=parsed, ms=ms)

@@ -21,6 +21,7 @@ class Bookmark:
     page_title: Optional[str] = None
     page_description: Optional[str] = None
     content_snippet: Optional[str] = None
+    page_html: Optional[str] = None
 
     summary: Optional[str] = None
     tags: List[str] = field(default_factory=list)

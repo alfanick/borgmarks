@@ -17,7 +17,7 @@ def test_counted_unique_urls_follows_redirect_and_skips_non_200():
 
     got = _counted_unique_urls([b1, b2, b3, b4])
 
-    assert got == {"https://new.example/path", "https://raw.example/"}
+    assert got == {"new.example/path", "raw.example/"}
 
 
 def test_sanity_check_passes_when_output_preserves_unique_urls():

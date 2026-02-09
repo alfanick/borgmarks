@@ -21,7 +21,14 @@ unit_tests:
   script:
     - python -m pip install --upgrade pip
     - pip install -r requirements.txt
-    - pytest -q
+    - mkdir -p test-reports
+    - pytest -q --junitxml=test-reports/pytest-junit.xml
+  artifacts:
+    when: always
+    paths:
+      - test-reports/pytest-junit.xml
+    reports:
+      junit: test-reports/pytest-junit.xml
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH

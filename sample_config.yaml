@@ -1,7 +1,10 @@
 # borgmarks config example (YAML)
 openai_model: gpt-5.2
+openai_timeout_s: 900
 openai_jobs: 2
-openai_max_bookmarks: 800
+openai_max_bookmarks: 0
+openai_reclassify: true
+openai_max_output_tokens: 100000000
 
 fetch_backend: httpx      # httpx | curl
 fetch_jobs: 16
