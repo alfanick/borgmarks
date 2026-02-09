@@ -9,7 +9,7 @@ def _read_version() -> str:
         return p.read_text(encoding="utf-8").strip()
     except Exception:
         # Safe fallback for unusual packaging/runtime contexts.
-        return "0.7.5"
+        return "0.7.6"
 
 
 __version__ = _read_version()

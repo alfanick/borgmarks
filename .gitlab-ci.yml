@@ -95,7 +95,9 @@ container_build:
 
 auto_tag_main:
   stage: publish
-  image: alpine/git:2.45.2
+  image:
+    name: alpine/git:2.45.2
+    entrypoint: [""]
   needs: ["version_guard_main", "container_build"]
   script:
     - CUR_VERSION="$(tr -d '[:space:]' < VERSION)"
