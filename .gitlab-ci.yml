@@ -93,6 +93,21 @@ container_publish:
           DEST_ARGS="${DEST_ARGS} --destination=${CI_REGISTRY_IMAGE}:${RAW_TAG}"
         fi
       fi
+      CUR_VERSION="$(sed -n 's/^__version__ = \"\\([^\"]*\\)\"/\\1/p' borgmarks/__init__.py | head -n1)"
+      PREV_VERSION=""
+      if [ -n "${CI_COMMIT_BEFORE_SHA}" ] && [ "${CI_COMMIT_BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]; then
+        PREV_INIT="$(
+          wget -qO- \
+            --header="JOB-TOKEN: ${CI_JOB_TOKEN}" \
+            "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/repository/files/borgmarks%2F__init__.py/raw?ref=${CI_COMMIT_BEFORE_SHA}" \
+          || true
+        )"
+        PREV_VERSION="$(printf '%s\n' "${PREV_INIT}" | sed -n 's/^__version__ = \"\\([^\"]*\\)\"/\\1/p' | head -n1)"
+      fi
+      if [ -n "${CUR_VERSION}" ] && [ "${CUR_VERSION}" != "${PREV_VERSION}" ]; then
+        DEST_ARGS="${DEST_ARGS} --destination=${CI_REGISTRY_IMAGE}:${CUR_VERSION}"
+        DEST_ARGS="${DEST_ARGS} --destination=${CI_REGISTRY_IMAGE}:v${CUR_VERSION}"
+      fi
       /kaniko/executor --context "${CI_PROJECT_DIR}" --dockerfile "${CI_PROJECT_DIR}/Containerfile" ${DEST_ARGS}
   rules:
     - if: $CI_COMMIT_TAG =~ /^v?[0-9]+\.[0-9]+\.[0-9]+$/
