@@ -47,10 +47,10 @@ cli_smoke:
   script:
     - python -m pip install --upgrade pip
     - pip install -r requirements.txt
-    - mkdir -p out-ci
-    - python -m borgmarks organize --ios-html tests/fixtures/sample_bookmarks.html --out out-ci/bookmarks.organized.smoke.html --no-fetch --no-openai
-    - test -s out-ci/bookmarks.organized.smoke.html
-    - grep -q "Bookmarks Toolbar" out-ci/bookmarks.organized.smoke.html
+    - mkdir -p out-ci/firefox-profile
+    - python -m borgmarks organize --ios-html tests/fixtures/sample_bookmarks.html --firefox-profile out-ci/firefox-profile --no-fetch --no-openai
+    - test -s out-ci/firefox-profile/bookmarks.organized.html
+    - grep -q "Bookmarks Toolbar" out-ci/firefox-profile/bookmarks.organized.html
   rules:
     - if: $CI_PIPELINE_SOURCE == "merge_request_event"
     - if: $CI_COMMIT_BRANCH
