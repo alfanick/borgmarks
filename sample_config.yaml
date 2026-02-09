@@ -1,0 +1,23 @@
+# borgmarks config example (YAML)
+openai_model: gpt-5.2
+openai_jobs: 2
+openai_max_bookmarks: 800
+
+fetch_backend: httpx      # httpx | curl
+fetch_jobs: 16
+fetch_max_urls: 400
+
+max_depth: 4
+leaf_max_links: 20
+
+keep_duplicates: false
+drop_dead: false
+
+prefix_non_english: true
+
+summary_max_chars: 220
+embed_metadata_in_html: true
+write_sidecar_jsonl: true
+
+log_level: INFO
+no_color: false
