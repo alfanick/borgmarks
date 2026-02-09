@@ -111,11 +111,19 @@ auto_tag_main:
     - git config user.email "juskowiak+ai@amadeusz.me"
     - git tag -a "$TAG" -m "Release ${TAG}"
     - |
-      if [ -z "${GITLAB_PUSH_TOKEN:-}" ]; then
-        echo "GITLAB_PUSH_TOKEN is not set; skipping auto tag push for ${TAG}."
+      if git push "https://gitlab-ci-token:${CI_JOB_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "$TAG"; then
+        echo "Pushed ${TAG} using CI_JOB_TOKEN."
         exit 0
       fi
-      git push "https://oauth2:${GITLAB_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "$TAG"
+      echo "CI_JOB_TOKEN push failed for ${TAG}, trying GITLAB_PUSH_TOKEN fallback."
+      if [ -n "${GITLAB_PUSH_TOKEN:-}" ]; then
+        if git push "https://oauth2:${GITLAB_PUSH_TOKEN}@${CI_SERVER_HOST}/${CI_PROJECT_PATH}.git" "$TAG"; then
+          echo "Pushed ${TAG} using GITLAB_PUSH_TOKEN fallback."
+          exit 0
+        fi
+      fi
+      echo "ERROR: unable to push ${TAG} with CI_JOB_TOKEN or GITLAB_PUSH_TOKEN."
+      exit 1
   rules:
     - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
 
