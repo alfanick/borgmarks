@@ -217,3 +217,18 @@ def test_recompute_foreign_count_and_integrity_check(tmp_path: Path):
         # place 100 has 2 references in fixture: one normal link + one tag link
         assert int(row[0]) == 2
         db.validate_integrity()
+
+
+def test_prune_regular_links_not_in_urls_removes_stale_and_tag_refs(tmp_path: Path):
+    db_path = tmp_path / "places.sqlite"
+    _mk_places_db(db_path)
+    with PlacesDB(db_path, readonly=False) as db:
+        removed = db.prune_regular_links_not_in_urls({"https://www.mozilla.org/"})
+        assert removed == 1
+
+        links = db.read_all(include_tag_links=False)
+        urls = {x.url for x in links}
+        assert urls == {"https://www.mozilla.org/"}
+
+        # Tag references for removed place fk should be gone as well.
+        assert db.read_tag("video") == []

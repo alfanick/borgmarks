@@ -525,6 +525,50 @@ class PlacesDB:
             self.conn.commit()
         return removed
 
+    def prune_regular_links_not_in_urls(self, keep_urls: Iterable[str]) -> int:
+        """Delete regular bookmark links whose URL is not in keep_urls.
+
+        Also removes tag-link references for deleted place IDs to avoid stale tag rows.
+        Returns number of removed regular bookmark link rows.
+        """
+        self._assert_writable()
+        keep = {normalize_url(u or "") for u in keep_urls if normalize_url(u or "")}
+        if not keep:
+            return 0
+
+        c = self._cursor()
+        regular_links = self.read_all(include_tag_links=False)
+        removed_regular = 0
+        removed_fks: set[int] = set()
+        for link in regular_links:
+            key = normalize_url(link.url or "")
+            if key in keep:
+                continue
+            c.execute("DELETE FROM moz_bookmarks WHERE id = ?", (int(link.id),))
+            removed_regular += 1
+            if int(link.place_id or 0) > 0:
+                removed_fks.add(int(link.place_id))
+
+        removed_tag_refs = 0
+        tags_root = self.root_ids.get("tags")
+        if removed_fks and tags_root is not None:
+            parent_map, _, _ = self._bookmark_tree_maps()
+            tag_rows = c.execute(
+                "SELECT id, fk FROM moz_bookmarks WHERE type = 1 AND fk IS NOT NULL"
+            ).fetchall()
+            for row in tag_rows:
+                bid = int(row["id"])
+                fk = int(row["fk"] or 0)
+                if fk not in removed_fks:
+                    continue
+                if self._descends_from(bid, tags_root, parent_map):
+                    c.execute("DELETE FROM moz_bookmarks WHERE id = ?", (bid,))
+                    removed_tag_refs += 1
+
+        if removed_regular or removed_tag_refs:
+            self.conn.commit()
+        return removed_regular
+
     def recompute_foreign_count(self) -> None:
         self._assert_writable()
         if not self._has_foreign_count:

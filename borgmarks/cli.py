@@ -754,6 +754,7 @@ def _merge_sync_stats(primary: SyncStats | None, secondary: SyncStats | None) ->
     s = secondary or SyncStats()
     return SyncStats(
         added_links=int(p.added_links) + int(s.added_links),
+        removed_links=int(p.removed_links) + int(s.removed_links),
         moved_links=int(p.moved_links) + int(s.moved_links),
         tagged_links=int(p.tagged_links) + int(s.tagged_links),
         touched_links=int(p.touched_links) + int(s.touched_links),
@@ -766,10 +767,11 @@ def _merge_sync_stats(primary: SyncStats | None, secondary: SyncStats | None) ->
 
 def _log_firefox_sync_stats(label: str, sync: SyncStats) -> None:
     log.info(
-        "Applied to Firefox DB (%s): touched=%d added=%d moved=%d tagged=%d icons=%d icon_errors=%d deduped_bookmarks=%d deduped_favicons=%d",
+        "Applied to Firefox DB (%s): touched=%d added=%d removed=%d moved=%d tagged=%d icons=%d icon_errors=%d deduped_bookmarks=%d deduped_favicons=%d",
         label,
         sync.touched_links,
         sync.added_links,
+        sync.removed_links,
         sync.moved_links,
         sync.tagged_links,
         sync.icon_links,

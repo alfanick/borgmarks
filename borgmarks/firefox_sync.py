@@ -30,6 +30,7 @@ _ROOT_ALIAS = {
 @dataclass
 class SyncStats:
     added_links: int = 0
+    removed_links: int = 0
     moved_links: int = 0
     tagged_links: int = 0
     touched_links: int = 0
@@ -104,6 +105,15 @@ def apply_bookmarks_to_firefox(
                         if created:
                             stats.tagged_links += 1
                 stats.touched_links += 1
+
+            desired_urls = {normalize_url(b.final_url or b.url) for b in rows if normalize_url(b.final_url or b.url)}
+            if desired_urls:
+                pruned = db.prune_regular_links_not_in_urls(desired_urls)
+                if pruned:
+                    stats.removed_links += pruned
+                    log.info("Pruned %d stale Firefox bookmark links not present in current run set.", pruned)
+            else:
+                log.warning("Skipping Firefox stale-link prune: desired URL set is empty.")
 
             if apply_icons and favicon_db is not None:
                 icon_rows = [b for b in rows if normalize_url(b.final_url or b.url) and (b.meta.get("icon_uri") or "").strip()]
