@@ -34,10 +34,12 @@ class Bookmark:
 @dataclass
 class FolderNode:
     name: str
+    sort_key: str = ""
     children: Dict[str, "FolderNode"] = field(default_factory=dict)
     bookmarks: List[Bookmark] = field(default_factory=list)
+    path_tokens: List[str] = field(default_factory=list)
 
     def get_or_create(self, name: str) -> "FolderNode":
         if name not in self.children:
-            self.children[name] = FolderNode(name=name)
+            self.children[name] = FolderNode(name=name, sort_key=name)
         return self.children[name]

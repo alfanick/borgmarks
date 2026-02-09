@@ -20,6 +20,7 @@ def test_sqlite_cache_roundtrip(tmp_path: Path):
         page_title="Page Title",
         page_description="Desc",
         content_snippet="Snippet",
+        icon_url="https://example.com/favicon.ico",
     )
     upsert_entries(db, [row])
 
@@ -32,3 +33,4 @@ def test_sqlite_cache_roundtrip(tmp_path: Path):
     assert r.categories == ["Reading", "Inbox"]
     assert r.summary == "summary"
     assert r.html == "<html></html>"
+    assert r.icon_url == "https://example.com/favicon.ico"

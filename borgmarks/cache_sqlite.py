@@ -23,6 +23,7 @@ class CacheEntry:
     page_title: Optional[str]
     page_description: Optional[str]
     content_snippet: Optional[str]
+    icon_url: Optional[str]
 
 
 def init_cache(db_path: Path, *, recreate: bool = False) -> None:
@@ -47,10 +48,14 @@ def init_cache(db_path: Path, *, recreate: bool = False) -> None:
                 page_title TEXT,
                 page_description TEXT,
                 content_snippet TEXT,
+                icon_url TEXT,
                 updated_at TEXT NOT NULL
             )
             """
         )
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(bookmark_cache)")}
+        if "icon_url" not in cols:
+            conn.execute("ALTER TABLE bookmark_cache ADD COLUMN icon_url TEXT")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_bookmark_cache_url ON bookmark_cache(url)")
 
 
@@ -62,7 +67,7 @@ def load_entries(db_path: Path, cache_keys: Iterable[str]) -> Dict[str, CacheEnt
     placeholders = ",".join(["?"] * len(keys))
     query = (
         "SELECT cache_key, url, final_url, title, tags_json, categories_json, status_code, visited_at, "
-        "summary, html, page_title, page_description, content_snippet "
+        "summary, html, page_title, page_description, content_snippet, icon_url "
         f"FROM bookmark_cache WHERE cache_key IN ({placeholders})"
     )
 
@@ -83,6 +88,7 @@ def load_entries(db_path: Path, cache_keys: Iterable[str]) -> Dict[str, CacheEnt
                 page_title=row[10],
                 page_description=row[11],
                 content_snippet=row[12],
+                icon_url=row[13],
             )
     return out
 
@@ -106,6 +112,7 @@ def upsert_entries(db_path: Path, entries: Iterable[CacheEntry]) -> None:
                 e.page_title,
                 e.page_description,
                 e.content_snippet,
+                e.icon_url,
                 now,
             )
         )
@@ -117,8 +124,8 @@ def upsert_entries(db_path: Path, entries: Iterable[CacheEntry]) -> None:
             """
             INSERT INTO bookmark_cache (
                 cache_key, url, final_url, title, tags_json, categories_json, status_code, visited_at,
-                summary, html, page_title, page_description, content_snippet, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                summary, html, page_title, page_description, content_snippet, icon_url, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(cache_key) DO UPDATE SET
                 url=excluded.url,
                 final_url=excluded.final_url,
@@ -132,6 +139,7 @@ def upsert_entries(db_path: Path, entries: Iterable[CacheEntry]) -> None:
                 page_title=excluded.page_title,
                 page_description=excluded.page_description,
                 content_snippet=excluded.content_snippet,
+                icon_url=excluded.icon_url,
                 updated_at=excluded.updated_at
             """,
             rows,

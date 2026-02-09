@@ -14,7 +14,9 @@ from .cache_sqlite import CacheEntry, init_cache, load_entries, upsert_entries
 from .classify import classify_bookmarks
 from .config import load_settings
 from .domain_lang import domain_of, guess_lang
+from .firefox_sync import apply_bookmarks_to_firefox
 from .fetch import fetch_many
+from .folder_emoji import enrich_folder_emojis
 from .log import LogConfig, get_logger, setup_logging
 from .parse_firefox_places import parse_firefox_places
 from .parse_netscape import parse_bookmarks_html
@@ -49,14 +51,19 @@ def main(argv: List[str] | None = None) -> int:
 
     org = sub.add_parser("organize", help="Organize an iOS/Safari bookmarks HTML export for Firefox import.")
     org.add_argument("--ios-html", required=True, help="Input iOS/Safari bookmarks HTML export (Netscape format).")
-    org.add_argument("--firefox-profile", required=False, help="Firefox profile dir (optional, merged bookmark source + backup).")
-    org.add_argument("--out", required=True, help="Output HTML path for Firefox import.")
-    org.add_argument("--state-dir", required=False, help="State dir for sidecars (default: alongside --out).")
+    org.add_argument("--firefox-profile", required=True, help="Firefox profile dir (used for input, cache, output, and optional apply).")
+    org.add_argument("--out", required=False, help="Deprecated: output path is now fixed to <firefox-profile>/bookmarks.organized.html.")
+    org.add_argument("--state-dir", required=False, help="Deprecated: state sidecars are written under firefox profile.")
     org.add_argument("--log-level", default=None, help="DEBUG/INFO/WARN/ERROR (overrides env/config).")
     org.add_argument("--no-color", action="store_true", help="Disable colored logging.")
     org.add_argument("--no-fetch", action="store_true", help="Skip website fetching (faster, less accurate).")
     org.add_argument("--no-openai", action="store_true", help="Skip OpenAI classification (fallback bucketing).")
     org.add_argument("--skip-cache", action="store_true", help="Recreate SQLite cache and skip reading existing cache data.")
+    org.add_argument(
+        "--apply-firefox",
+        action="store_true",
+        help="Apply organized bookmarks/tags/folders back into Firefox places.sqlite (bookmarks only, no history).",
+    )
     org.add_argument("--dry-run", action="store_true", help="Run pipeline but do not write output file.")
     org.add_argument("--backup-firefox", action="store_true", help="If firefox-profile is given, back up places.sqlite to state-dir.")
 
@@ -80,26 +87,53 @@ def _cmd_organize(args, cfg) -> int:
         log.error("Input file not found: %s", ios_html)
         return 2
 
-    out_path = Path(args.out)
-    state_dir = Path(args.state_dir) if args.state_dir else out_path.parent
+    profile_dir = Path(args.firefox_profile)
+    if not profile_dir.exists():
+        log.error("Firefox profile not found: %s", profile_dir)
+        return 2
+    if args.out:
+        log.warning("--out is deprecated and ignored. Using <firefox-profile>/bookmarks.organized.html.")
+    if args.state_dir:
+        log.warning("--state-dir is deprecated and ignored. Using <firefox-profile> for sidecars/state.")
+
+    out_path = profile_dir / "bookmarks.organized.html"
+    state_dir = profile_dir
     state_dir.mkdir(parents=True, exist_ok=True)
-    cache_db = state_dir / "bookmarks-cache.sqlite"
+    firefox_places = _resolve_places_db_path(profile_dir)
+    cache_db = profile_dir / "borg_cache.sqlite"
+    cache_db.parent.mkdir(parents=True, exist_ok=True)
     init_cache(cache_db, recreate=args.skip_cache)
 
-    if args.firefox_profile and args.backup_firefox:
-        _backup_firefox_profile(Path(args.firefox_profile), state_dir)
+    begin_backup = None
+    if firefox_places and firefox_places.exists():
+        begin_backup = _backup_firefox_to_tmp(firefox_places, phase="begin")
+        log.info("Firefox places backup (begin): %s", begin_backup)
+
+    def _finish(code: int) -> int:
+        if firefox_places and firefox_places.exists():
+            try:
+                end_backup = _backup_firefox_to_tmp(firefox_places, phase="end")
+                log.info("Firefox places backup (end): %s", end_backup)
+            except Exception as e:
+                log.warning("Firefox places end-backup failed: %s", e)
+        if code == 0:
+            log.info("Done in %d ms.", int((time.time() - t0) * 1000))
+        return code
+
+    if args.backup_firefox:
+        _backup_firefox_profile(profile_dir, state_dir)
 
     try:
         ios_bookmarks, _root_title = parse_bookmarks_html(ios_html)
     except Exception as e:
         log.error("Failed to parse bookmarks HTML: %s", e)
-        return 2
+        return _finish(2)
     log.info("Parsed %d bookmarks from iOS export: %s", len(ios_bookmarks), ios_html)
 
     firefox_bookmarks = []
-    if args.firefox_profile:
+    if firefox_places:
         try:
-            firefox_bookmarks = parse_firefox_places(Path(args.firefox_profile))
+            firefox_bookmarks = parse_firefox_places(firefox_places)
             log.info(
                 "Parsed %d bookmarks from Firefox profile: %s",
                 len(firefox_bookmarks),
@@ -172,6 +206,8 @@ def _cmd_organize(args, cfg) -> int:
                 b.page_title = r.title
                 b.page_description = r.description
                 b.content_snippet = r.snippet
+                if r.favicon_url:
+                    b.meta["icon_uri"] = r.favicon_url
                 b.page_html = r.html
                 b.meta["fetch_ms"] = str(r.fetch_ms)
                 b.meta["visited_at"] = _utc_now_iso()
@@ -209,14 +245,15 @@ def _cmd_organize(args, cfg) -> int:
             b.summary = b.content_snippet[: cfg.summary_max_chars]
 
     # OpenAI categorization
+    newly_assigned_ids: set[str] = set()
     if args.no_openai:
         log.warning("Skipping OpenAI classification (--no-openai). Using fallback bucketing.")
-        _fallback_assign(bookmarks)
+        newly_assigned_ids = _fallback_assign(bookmarks)
     else:
         if not (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")):
             log.error("OPENAI_API_KEY not set. Set it or use --no-openai.")
-            return 2
-        classify_bookmarks(bookmarks, cfg)
+            return _finish(2)
+        newly_assigned_ids = classify_bookmarks(bookmarks, cfg)
 
     # Dead links handling
     if not cfg.drop_dead:
@@ -238,8 +275,13 @@ def _cmd_organize(args, cfg) -> int:
                 if not t.startswith(f"[{b.lang}]"):
                     b.assigned_title = f"[{b.lang}] {t}"
 
+    _normalize_category_paths(bookmarks)
+
     # Leaf folder cap
     enforce_leaf_limits(bookmarks, leaf_max_links=cfg.leaf_max_links, max_depth=cfg.max_depth)
+    if not args.no_openai and cfg.openai_folder_emoji_enrich and newly_assigned_ids:
+        enrich_folder_emojis(bookmarks, cfg, target_ids=newly_assigned_ids)
+        _normalize_category_paths(bookmarks)
 
     # Sidecar metadata
     if cfg.write_sidecar_jsonl:
@@ -278,17 +320,29 @@ def _cmd_organize(args, cfg) -> int:
             )
         except Exception as e:
             log.error("Failed to write output HTML: %s", e)
-            return 2
+            return _finish(2)
+
+    if args.apply_firefox:
+        try:
+            sync = apply_bookmarks_to_firefox(firefox_places, bookmarks)
+            log.info(
+                "Applied to Firefox DB: touched=%d added=%d moved=%d tagged=%d",
+                sync.touched_links,
+                sync.added_links,
+                sync.moved_links,
+                sync.tagged_links,
+            )
+        except Exception as e:
+            log.error("Failed to apply to Firefox places.sqlite: %s", e)
+            return _finish(2)
 
     # Store current bookmark state in cache (including categories/tags and summaries).
     upsert_entries(cache_db, [_cache_entry_from_bookmark(b) for b in bookmarks])
 
     # End-of-run guard: the pipeline must preserve unique links, except non-200.
     if not _sanity_check_unique_link_counts(sanity_input, bookmarks):
-        return 2
-
-    log.info("Done in %d ms.", int((time.time() - t0) * 1000))
-    return 0
+        return _finish(2)
+    return _finish(0)
 
 
 def _backup_firefox_profile(profile: Path, state_dir: Path) -> None:
@@ -305,8 +359,28 @@ def _backup_firefox_profile(profile: Path, state_dir: Path) -> None:
         log.warning("Firefox backup failed: %s", e)
 
 
-def _fallback_assign(bookmarks) -> None:
+def _resolve_places_db_path(profile_or_db: Path) -> Path:
+    p = Path(profile_or_db)
+    if p.is_file():
+        return p
+    db = p / "places.sqlite"
+    return db
+
+
+def _backup_firefox_to_tmp(places_db: Path, *, phase: str) -> Path:
+    tmp_dir = Path("/tmp")
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    ts = int(time.time())
+    dst = tmp_dir / f"borgmarks-places-{phase}-{ts}.sqlite"
+    dst.write_bytes(places_db.read_bytes())
+    return dst
+
+
+def _fallback_assign(bookmarks) -> set[str]:
+    touched: set[str] = set()
     for b in bookmarks:
+        if b.assigned_path:
+            continue
         d = (b.domain or "").lower()
         if "github.com" in d or "stackoverflow.com" in d:
             b.assigned_path = ["Computers", "🧑‍💻 Dev"]
@@ -320,11 +394,98 @@ def _fallback_assign(bookmarks) -> None:
             b.assigned_path = ["News", "📺 Video"]
         else:
             b.assigned_path = ["Reading", "📥 Inbox"]
+        touched.add(b.id)
+    if touched:
+        log.info("Fallback classified %d uncategorized bookmarks.", len(touched))
+    return touched
 
 
 def _assign_sequential_ids(bookmarks: Iterable) -> None:
     for i, b in enumerate(bookmarks):
         b.id = f"b{i + 1}"
+
+
+def _normalize_category_paths(bookmarks: Iterable) -> None:
+    # Canonicalize folder names per parent path so emoji-prefixed variants map
+    # to one bucket, e.g. "👕 Clothing" and "Clothing".
+    by_parent_key = {}
+    rows = list(bookmarks)
+    for b in rows:
+        raw = list(b.assigned_path or [])
+        if not raw:
+            continue
+        parent_key_tuple = tuple()
+        for comp in raw:
+            key = _folder_name_key(comp)
+            map_key = (parent_key_tuple, key)
+            by_parent_key.setdefault(map_key, {})
+            by_parent_key[map_key][str(comp).strip()] = by_parent_key[map_key].get(str(comp).strip(), 0) + 1
+            parent_key_tuple = tuple(list(parent_key_tuple) + [key])
+
+    canon_by_parent_and_key = {}
+    for map_key, candidates in by_parent_key.items():
+        # Deterministic canonical selection:
+        # 1) most frequent
+        # 2) prefer emoji-prefixed label
+        # 3) shortest base text
+        # 4) lexical
+        ordered = sorted(
+            candidates.items(),
+            key=lambda kv: (
+                -kv[1],
+                0 if _has_leading_emoji(kv[0]) else 1,
+                len(_strip_leading_non_alnum(kv[0])),
+                kv[0].lower(),
+            ),
+        )
+        canon_by_parent_and_key[map_key] = ordered[0][0]
+
+    for b in rows:
+        raw = list(b.assigned_path or [])
+        if not raw:
+            continue
+        norm_path = []
+        parent_key_tuple = tuple()
+        changed = False
+        for comp in raw:
+            key = _folder_name_key(comp)
+            map_key = (parent_key_tuple, key)
+            canonical = canon_by_parent_and_key.get(map_key, str(comp).strip())
+            if canonical != comp:
+                changed = True
+            norm_path.append(canonical)
+            parent_key_tuple = tuple(list(parent_key_tuple) + [key])
+        if changed:
+            b.assigned_path = norm_path
+
+
+def _folder_name_key(name: str) -> str:
+    s = (name or "").strip()
+    while s and not s[0].isalnum():
+        s = s[1:].lstrip()
+    out = []
+    prev_space = False
+    for ch in s:
+        if ch.isspace():
+            if not prev_space:
+                out.append(" ")
+            prev_space = True
+            continue
+        prev_space = False
+        out.append(ch.lower())
+    return "".join(out).strip()
+
+
+def _has_leading_emoji(name: str) -> bool:
+    s = (name or "").strip()
+    return bool(s and not s[0].isalnum())
+
+
+def _strip_leading_non_alnum(name: str) -> str:
+    s = (name or "").strip()
+    while s and not s[0].isalnum():
+        s = s[1:].lstrip()
+    return s
 
 
 def _sanity_check_unique_link_counts(input_bookmarks: Iterable, output_bookmarks: Iterable) -> bool:
@@ -417,6 +578,8 @@ def _apply_cache_entry(b, c: CacheEntry) -> None:
     b.page_description = c.page_description
     b.content_snippet = c.content_snippet
     b.page_html = c.html
+    if c.icon_url:
+        b.meta["icon_uri"] = c.icon_url
     if c.summary:
         b.summary = c.summary
     if c.tags:
@@ -446,6 +609,7 @@ def _cache_entry_from_bookmark(b) -> CacheEntry:
         page_title=b.page_title,
         page_description=b.page_description,
         content_snippet=b.content_snippet,
+        icon_url=b.meta.get("icon_uri"),
     )
 
 
@@ -467,11 +631,12 @@ def _cache_entries_for_bookmark(b, *, original_url: str | None = None) -> List[C
                     visited_at=base.visited_at,
                     summary=base.summary,
                     html=base.html,
-                    page_title=base.page_title,
-                    page_description=base.page_description,
-                    content_snippet=base.content_snippet,
-                )
+                page_title=base.page_title,
+                page_description=base.page_description,
+                content_snippet=base.content_snippet,
+                icon_url=base.icon_url,
             )
+        )
     return out
 
 

@@ -22,7 +22,9 @@ Rules:
 - Don't invent URLs. Don't drop bookmarks.
 - Prefer stable top-level buckets, but invent new ones if it improves clarity:
   Computers, Admin, Shopping, Travelling, News, Sport, Photography, Art, Utilities, Fun, Archive.
-- Use the provided page summary/snippet and existing folder path as hints.
+- Use the provided page summary/snippet and existing folder path as strong hints.
+- Prefer reusing existing_path when it is reasonable; do not reshuffle aggressively.
+- Reuse existing folder names and paths whenever possible; only introduce new folders when clearly better.
 - Context: input URLs come from an exported iOS/iPadOS Safari Netscape Bookmark HTML file.
 - Context: output will be a Firefox-importable Netscape Bookmark HTML file.
 
@@ -37,6 +39,8 @@ Rules:
 - Keep folder depth <= 4.
 - Reuse folder paths from folder_catalog whenever possible.
 - Be conservative: keep current_path unless there is clear improvement.
+- Do not move bookmarks between folders unless there is a strong semantic reason.
+- If current_path is acceptable, keep it unchanged.
 - Avoid moving between closely related sibling folders (e.g. Camera <-> Video) unless strongly justified.
 - Avoid creating singleton folders; prefer placing multiple related links in the same folder.
 - Keep tags concise and lowercase.
@@ -48,8 +52,15 @@ Output must be strict JSON for the schema (no extra text).
 """
 
 
-def classify_bookmarks(bookmarks: List[Bookmark], cfg: Settings) -> None:
+def classify_bookmarks(bookmarks: List[Bookmark], cfg: Settings) -> set[str]:
+    preassigned = [b for b in bookmarks if b.assigned_path]
+    if preassigned:
+        log.info("Reusing cached classification for %d bookmarks.", len(preassigned))
+    bookmarks = [b for b in bookmarks if not b.assigned_path]
+
     n_total = len(bookmarks)
+    if n_total == 0:
+        return set()
     if cfg.openai_max_bookmarks > 0 and n_total > cfg.openai_max_bookmarks:
         log.warning(
             "OpenAI classification capped to first %d/%d bookmarks (BORG_OPENAI_MAX_BOOKMARKS).",
@@ -84,6 +95,9 @@ def classify_bookmarks(bookmarks: List[Bookmark], cfg: Settings) -> None:
             payload_kind="reclassify",
             folder_catalog=folder_catalog,
         )
+    touched = {b.id for b in target}
+    touched.update(b.id for b in rest)
+    return touched
 
 
 def _classify_phase(
@@ -128,6 +142,8 @@ def _classify_phase(
             user_payload=json.dumps(payload, ensure_ascii=False),
             phase_label=phase_name,
             batch_label=f"batch-{batch_idx + 1}/{len(batches)}",
+            use_browser_tool=cfg.openai_agent_browser,
+            reasoning_effort=cfg.openai_reasoning_effort,
         )
 
     with ThreadPoolExecutor(max_workers=max(1, cfg.openai_jobs)) as ex:

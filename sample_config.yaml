@@ -5,6 +5,10 @@ openai_jobs: 2
 openai_max_bookmarks: 0
 openai_reclassify: true
 openai_max_output_tokens: 100000000
+openai_agent_browser: false
+openai_reasoning_effort: high
+openai_folder_emoji_enrich: true
+openai_folder_emoji_max_nodes: 800
 reclassify_conservative: true
 reclassify_min_folder_gain: 2
 

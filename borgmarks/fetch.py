@@ -5,6 +5,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
+from urllib.parse import urljoin
 
 import httpx
 from bs4 import BeautifulSoup  # type: ignore
@@ -22,6 +23,7 @@ class FetchResult:
     title: Optional[str]
     description: Optional[str]
     snippet: Optional[str]
+    favicon_url: Optional[str]
     html: Optional[str]
     fetch_ms: int
     error: Optional[str] = None
@@ -40,7 +42,7 @@ def fetch_many(
 
     backends:
       - httpx: fetch body (title/description/snippet)
-      - curl: subprocess-based, status + final_url only (v0.0.5)
+      - curl: subprocess-based, status + final_url only (v0.5.0)
     """
     backend = backend.lower()
     if backend == "curl":
@@ -66,7 +68,7 @@ def _fetch_many_httpx(
             with httpx.Client(follow_redirects=True, headers=headers, timeout=timeout) as client:
                 r = client.get(url)
                 content = r.content[:max_bytes]
-                title, desc, snippet = _extract_meta(content)
+                title, desc, snippet, favicon = _extract_meta(content, base_url=str(r.url))
                 ms = int((time.time() - t0) * 1000)
                 return url, FetchResult(
                     ok=(200 <= r.status_code < 400),
@@ -75,6 +77,7 @@ def _fetch_many_httpx(
                     title=title,
                     description=desc,
                     snippet=snippet,
+                    favicon_url=favicon,
                     html=_decode_html(content),
                     fetch_ms=ms,
                     error=None,
@@ -88,6 +91,7 @@ def _fetch_many_httpx(
                 title=None,
                 description=None,
                 snippet=None,
+                favicon_url=None,
                 html=None,
                 fetch_ms=ms,
                 error=str(e),
@@ -111,7 +115,7 @@ def _fetch_many_curl(
     """curl backend (subprocess + threadpool).
 
     Notes:
-    - This backend only captures status + final_url (no page snippet) in v0.0.5.
+    - This backend only captures status + final_url (no page snippet) in v0.5.0.
     - It's mostly here for compatibility with environments where httpx is blocked.
     """
     out: Dict[str, FetchResult] = {}
@@ -140,7 +144,7 @@ def _fetch_many_curl(
             if r.returncode != 0:
                 return url, FetchResult(
                     ok=False, status=None, final_url=None,
-                    title=None, description=None, snippet=None, html=None,
+                    title=None, description=None, snippet=None, favicon_url=None, html=None,
                     fetch_ms=ms, error=(r.stderr.strip() or f"curl rc={r.returncode}")
                 )
             parts = (r.stdout or "").split("\t", 1)
@@ -153,6 +157,7 @@ def _fetch_many_curl(
                 status=status,
                 final_url=eff or None,
                 title=None, description=None, snippet=None, html=None,
+                favicon_url=None,
                 fetch_ms=ms,
                 error=None if ok else "http_status_not_ok",
             )
@@ -160,7 +165,7 @@ def _fetch_many_curl(
             ms = int((time.time() - t0) * 1000)
             return url, FetchResult(
                 ok=False, status=None, final_url=None,
-                title=None, description=None, snippet=None, html=None,
+                title=None, description=None, snippet=None, favicon_url=None, html=None,
                 fetch_ms=ms, error=str(e)
             )
 
@@ -172,9 +177,9 @@ def _fetch_many_curl(
     return out
 
 
-def _extract_meta(content: bytes) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+def _extract_meta(content: bytes, *, base_url: str) -> Tuple[Optional[str], Optional[str], Optional[str], Optional[str]]:
     if not content:
-        return None, None, None
+        return None, None, None, None
     try:
         soup = BeautifulSoup(content, "lxml")
         title = soup.title.get_text(strip=True) if soup.title else None
@@ -192,9 +197,32 @@ def _extract_meta(content: bytes) -> Tuple[Optional[str], Optional[str], Optiona
                 break
         snippet = " ".join(parts)
         snippet = snippet[:1500] if snippet else None
-        return title, desc, snippet
+        favicon = _extract_favicon_url(soup, base_url)
+        return title, desc, snippet, favicon
     except Exception:
-        return None, None, None
+        return None, None, None, None
+
+
+def _extract_favicon_url(soup, base_url: str) -> Optional[str]:
+    # Prefer explicit icon declarations.
+    icon_rels = {"icon", "shortcut icon", "apple-touch-icon", "mask-icon"}
+    for link in soup.find_all("link"):
+        rel = " ".join([x.lower() for x in (link.get("rel") or [])]) if link.get("rel") else ""
+        href = (link.get("href") or "").strip()
+        if not href:
+            continue
+        if rel in icon_rels or "icon" in rel:
+            return urljoin(base_url, href)
+    # Fallback to conventional favicon location.
+    try:
+        from urllib.parse import urlparse
+
+        p = urlparse(base_url)
+        if p.scheme and p.netloc:
+            return f"{p.scheme}://{p.netloc}/favicon.ico"
+    except Exception:
+        pass
+    return None
 
 
 def _decode_html(content: bytes) -> Optional[str]:
