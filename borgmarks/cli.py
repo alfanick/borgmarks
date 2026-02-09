@@ -6,7 +6,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import List
+from typing import Iterable, List
 
 from . import __version__
 from .classify import classify_bookmarks
@@ -107,6 +107,7 @@ def _cmd_organize(args, cfg) -> int:
     bookmarks = deduped
     if dupes:
         log.info("Deduped %d duplicates (set BORG_KEEP_DUPLICATES=1 to keep).", dupes)
+    sanity_input = list(bookmarks)
 
     # Fetch subset (visit websites)
     if not args.no_fetch:
@@ -216,6 +217,10 @@ def _cmd_organize(args, cfg) -> int:
             log.error("Failed to write output HTML: %s", e)
             return 2
 
+    # End-of-run guard: the pipeline must preserve unique links, except non-200.
+    if not _sanity_check_unique_link_counts(sanity_input, bookmarks):
+        return 2
+
     log.info("Done in %d ms.", int((time.time() - t0) * 1000))
     return 0
 
@@ -249,3 +254,39 @@ def _fallback_assign(bookmarks) -> None:
             b.assigned_path = ["News", "📺 Video"]
         else:
             b.assigned_path = ["Reading", "📥 Inbox"]
+
+
+def _sanity_check_unique_link_counts(input_bookmarks: Iterable, output_bookmarks: Iterable) -> bool:
+    input_urls = _counted_unique_urls(input_bookmarks)
+    output_urls = _counted_unique_urls(output_bookmarks)
+    if input_urls == output_urls:
+        log.info(
+            "Sanity check passed: %d unique links preserved (redirect-aware, excluding non-200).",
+            len(input_urls),
+        )
+        return True
+
+    missing = sorted(input_urls - output_urls)
+    extra = sorted(output_urls - input_urls)
+    log.error(
+        "Sanity check failed: input/output unique link mismatch (input=%d, output=%d, missing=%d, extra=%d).",
+        len(input_urls),
+        len(output_urls),
+        len(missing),
+        len(extra),
+    )
+    if missing:
+        log.error("Missing URLs sample: %s", missing[:5])
+    if extra:
+        log.error("Unexpected URLs sample: %s", extra[:5])
+    return False
+
+
+def _counted_unique_urls(bookmarks: Iterable) -> set[str]:
+    out: set[str] = set()
+    for b in bookmarks:
+        # Non-200 links are excluded from this parity check by design.
+        if b.http_status is not None and b.http_status != 200:
+            continue
+        out.add(normalize_url(b.final_url or b.url))
+    return out

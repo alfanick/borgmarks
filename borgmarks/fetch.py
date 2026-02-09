@@ -39,7 +39,7 @@ def fetch_many(
 
     backends:
       - httpx: fetch body (title/description/snippet)
-      - curl: subprocess-based, status + final_url only (v0.0.2)
+      - curl: subprocess-based, status + final_url only (v0.0.3)
     """
     backend = backend.lower()
     if backend == "curl":
@@ -108,7 +108,7 @@ def _fetch_many_curl(
     """curl backend (subprocess + threadpool).
 
     Notes:
-    - This backend only captures status + final_url (no page snippet) in v0.0.2.
+    - This backend only captures status + final_url (no page snippet) in v0.0.3.
     - It's mostly here for compatibility with environments where httpx is blocked.
     """
     out: Dict[str, FetchResult] = {}
