@@ -149,7 +149,8 @@ podman run --rm -it \
 Env examples:
 - `BORG_OPENAI_TIMEOUT_S=900`
 - `BORG_OPENAI_RECLASSIFY=1`
-- `BORG_OPENAI_AGENT_BROWSER=1` (optional Agent/browser tool usage)
+- `BORG_OPENAI_AGENT_BROWSER=0` (default; optional Agent/browser tool usage when set to `1`)
+- `OPENAI_AGENT_BROWSER=0` (compat alias; `BORG_OPENAI_AGENT_BROWSER` has precedence)
 - `BORG_OPENAI_REASONING_EFFORT=high`
 
 ## License

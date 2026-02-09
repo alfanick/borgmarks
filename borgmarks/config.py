@@ -25,6 +25,15 @@ def _env_bool(name: str, default: bool) -> bool:
     return v.strip().lower() in ("1", "true", "yes", "y", "on")
 
 
+def _env_bool_first(names: tuple[str, ...], default: bool) -> bool:
+    for name in names:
+        v = os.getenv(name)
+        if v is None or v == "":
+            continue
+        return v.strip().lower() in ("1", "true", "yes", "y", "on")
+    return default
+
+
 def _env_str(name: str, default: str) -> str:
     v = os.getenv(name)
     return default if v is None else v
@@ -84,7 +93,11 @@ class Settings:
         s.openai_max_bookmarks = _env_int("BORG_OPENAI_MAX_BOOKMARKS", s.openai_max_bookmarks)
         s.openai_reclassify = _env_bool("BORG_OPENAI_RECLASSIFY", s.openai_reclassify)
         s.openai_max_output_tokens = _env_int("BORG_OPENAI_MAX_OUTPUT_TOKENS", s.openai_max_output_tokens)
-        s.openai_agent_browser = _env_bool("BORG_OPENAI_AGENT_BROWSER", s.openai_agent_browser)
+        # Compat: OPENAI_AGENT_BROWSER also supported; BORG_ variant wins when both are set.
+        s.openai_agent_browser = _env_bool_first(
+            ("BORG_OPENAI_AGENT_BROWSER", "OPENAI_AGENT_BROWSER"),
+            s.openai_agent_browser,
+        )
         s.openai_reasoning_effort = _env_str("BORG_OPENAI_REASONING_EFFORT", s.openai_reasoning_effort)
         s.openai_folder_emoji_enrich = _env_bool("BORG_OPENAI_FOLDER_EMOJI_ENRICH", s.openai_folder_emoji_enrich)
         s.openai_folder_emoji_max_nodes = _env_int("BORG_OPENAI_FOLDER_EMOJI_MAX_NODES", s.openai_folder_emoji_max_nodes)
