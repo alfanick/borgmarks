@@ -6,9 +6,12 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from .favicons_db import FaviconsDB
+from .log import get_logger
 from .model import Bookmark
 from .places_db import PlacesDB
 from .url_norm import normalize_url
+
+log = get_logger(__name__)
 
 _ROOT_ALIAS = {
     "bookmarkstoolbar": "toolbar",
@@ -41,6 +44,8 @@ def apply_bookmarks_to_firefox(
     favicons_db_path: Optional[Path] = None,
 ) -> SyncStats:
     stats = SyncStats()
+    rows = list(bookmarks)
+    total = len(rows)
     with ExitStack() as stack:
         db = stack.enter_context(PlacesDB(places_db_path, readonly=False))
         favicon_db = None
@@ -62,12 +67,15 @@ def apply_bookmarks_to_firefox(
                 existing_by_url[key] = e.id
                 existing_parent_by_url[key] = e.parent_id
 
-        for b in bookmarks:
+        for idx, b in enumerate(rows, start=1):
             url = normalize_url(b.final_url or b.url)
             if not url:
                 continue
             title = (b.assigned_title or b.title or url).strip() or url
             tags = [t for t in (b.tags or []) if str(t).strip()]
+            category = "/".join(b.assigned_path or b.folder_path or ["Uncategorized"])
+            domain = (b.domain or "").strip() or "unknown-domain"
+            log.info("Link [%d/%d] - %s - %s (phase=apply)", idx, total, domain, category)
 
             root_id, rel_path = _resolve_target_root_and_relpath(db, b.assigned_path or b.folder_path or [])
             target_parent_id = db.ensure_folder_path(root_id, rel_path)

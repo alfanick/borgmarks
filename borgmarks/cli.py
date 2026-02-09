@@ -266,11 +266,19 @@ def _cmd_organize(args, cfg) -> int:
         elif b.content_snippet:
             b.summary = b.content_snippet[: cfg.summary_max_chars]
 
+    skip_openai_via_cache = _all_bookmarks_have_cached_openai_enrichment(bookmarks)
+    openai_enabled = not args.no_openai and not skip_openai_via_cache
+
     # OpenAI categorization
     newly_assigned_ids: set[str] = set()
     if args.no_openai:
         log.warning("Skipping OpenAI classification (--no-openai). Using fallback bucketing.")
         newly_assigned_ids = _fallback_assign(bookmarks)
+    elif skip_openai_via_cache:
+        log.info(
+            "Skipping OpenAI classification/tagging/emoji: cache already has summary+category for all %d bookmarks.",
+            len(bookmarks),
+        )
     else:
         if not (os.getenv("OPENAI_API_KEY") or os.getenv("OPENAI_KEY")):
             log.error("OPENAI_API_KEY not set. Set it or use --no-openai.")
@@ -301,12 +309,12 @@ def _cmd_organize(args, cfg) -> int:
 
     # Leaf folder cap
     enforce_leaf_limits(bookmarks, leaf_max_links=cfg.leaf_max_links, max_depth=cfg.max_depth)
-    if not args.no_openai and cfg.openai_folder_emoji_enrich:
+    if openai_enabled and cfg.openai_folder_emoji_enrich:
         # Apply missing folder emojis across the whole tree (existing + new),
         # but never replace already present emoji prefixes.
         enrich_folder_emojis(bookmarks, cfg)
         _normalize_category_paths(bookmarks)
-    if args.no_openai:
+    if not openai_enabled:
         # Keep tags normalized/capped even without OpenAI calls.
         prev = cfg.openai_tags_enrich
         cfg.openai_tags_enrich = False
@@ -316,6 +324,8 @@ def _cmd_organize(args, cfg) -> int:
             cfg.openai_tags_enrich = prev
     elif cfg.openai_tags_enrich:
         enrich_bookmark_tags(bookmarks, cfg)
+
+    _log_link_progress(bookmarks, phase="organize")
 
     # Sidecar metadata
     if cfg.write_sidecar_jsonl:
@@ -647,6 +657,27 @@ def _log_run_stats(bookmarks: Iterable, *, exact_dupes: int, near_dupes: int) ->
         broken,
         total_dupes,
     )
+
+
+def _all_bookmarks_have_cached_openai_enrichment(bookmarks: Iterable) -> bool:
+    rows = list(bookmarks)
+    if not rows:
+        return False
+    for b in rows:
+        path = [str(x).strip() for x in (getattr(b, "assigned_path", None) or []) if str(x).strip()]
+        summary = (getattr(b, "summary", None) or "").strip()
+        if not path or not summary:
+            return False
+    return True
+
+
+def _log_link_progress(bookmarks: Iterable, *, phase: str) -> None:
+    rows = list(bookmarks)
+    total = len(rows)
+    for i, b in enumerate(rows, start=1):
+        domain = (getattr(b, "domain", "") or "").strip() or "unknown-domain"
+        category = "/".join(getattr(b, "assigned_path", None) or getattr(b, "folder_path", None) or ["Uncategorized"])
+        log.info("Link [%d/%d] - %s - %s (phase=%s)", i, total, domain, category, phase)
 
 
 def _apply_cache_entry(b, c: CacheEntry) -> None:

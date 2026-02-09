@@ -125,6 +125,8 @@ def _classify_phase(
     )
 
     id_to_bm: Dict[str, Bookmark] = {b.id: b for b in target}
+    progress_idx: Dict[str, int] = {b.id: i + 1 for i, b in enumerate(target)}
+    total = len(target)
     allowed_paths = {tuple(x["path"]) for x in folder_catalog if x.get("path")}
     folder_sizes = {tuple(x["path"]): int(x.get("count", 0) or 0) for x in folder_catalog if x.get("path")}
     errors = 0
@@ -160,6 +162,8 @@ def _classify_phase(
                     folder_sizes=folder_sizes,
                     phase_name=phase_name,
                     openai_ms=res.ms,
+                    progress_idx=progress_idx,
+                    total=total,
                 )
             except Exception as e:
                 errors += 1
@@ -217,6 +221,8 @@ def _apply_assignments(
     folder_sizes: Dict[Tuple[str, ...], int],
     phase_name: str,
     openai_ms: int,
+    progress_idx: Dict[str, int],
+    total: int,
 ) -> None:
     expected_ids = {b.id for b in batch}
     seen_ids = set()
@@ -266,6 +272,10 @@ def _apply_assignments(
             b.assigned_title = a.title
         b.tags = (a.tags or [])[:10]
         b.meta["openai_ms"] = str(openai_ms)
+        domain = (b.domain or "").strip() or "unknown-domain"
+        category = "/".join(new_path or ["Uncategorized"])
+        pos = progress_idx.get(b.id, 0)
+        log.info("Link [%d/%d] - %s - %s (phase=%s)", pos, total, domain, category, phase_name)
 
     missing = sorted(expected_ids - seen_ids)
     if missing:

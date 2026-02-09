@@ -1,7 +1,8 @@
 import sqlite3
 from pathlib import Path
 
-from borgmarks.cli import main
+from borgmarks.cache_sqlite import CacheEntry, init_cache, upsert_entries
+from borgmarks.cli import _url_identity, main
 
 
 def _mk_profile(profile: Path) -> None:
@@ -102,6 +103,55 @@ def test_cli_supports_firefox_only_mode_without_ios_html(tmp_path: Path):
             "--no-openai",
             "--no-fetch",
             "--skip-cache",
+        ]
+    )
+    assert rc == 0
+    assert (profile / "bookmarks.organized.html").exists()
+
+
+def test_cli_skips_openai_when_cache_has_summary_and_categories(tmp_path: Path, monkeypatch):
+    profile = tmp_path / "profile"
+    _mk_profile(profile)
+    cache_db = profile / "borg_cache.sqlite"
+    init_cache(cache_db, recreate=True)
+    urls = [
+        "https://github.com/",
+        "https://onet.pl/",
+        "https://en.wikipedia.org/wiki/Fujifilm",
+    ]
+    rows = [
+        CacheEntry(
+            cache_key=_url_identity(url),
+            url=url,
+            final_url=url,
+            title=None,
+            tags=["cached"],
+            categories=["Computers", "Dev"],
+            status_code=200,
+            visited_at="2026-02-09T00:00:00+00:00",
+            summary="cached openai summary",
+            html=None,
+            page_title=None,
+            page_description=None,
+            content_snippet=None,
+            icon_url=None,
+        )
+        for url in urls
+    ]
+    upsert_entries(cache_db, rows)
+
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_KEY", raising=False)
+
+    ios = Path(__file__).parent / "fixtures" / "sample_bookmarks.html"
+    rc = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios),
+            "--firefox-profile",
+            str(profile),
+            "--no-fetch",
         ]
     )
     assert rc == 0
