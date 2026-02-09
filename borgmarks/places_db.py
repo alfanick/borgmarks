@@ -259,6 +259,17 @@ class PlacesDB:
                 row = s
                 break
         if row:
+            existing_title = (row["title"] or "").strip()
+            # Prefer emoji-prefixed folder names when caller explicitly asks for one.
+            # This keeps "Clothing" and "👕 Clothing" as a single folder while still
+            # allowing gradual emoji enrichment on existing trees.
+            if _has_leading_emoji(name) and not _has_leading_emoji(existing_title):
+                c.execute(
+                    "UPDATE moz_bookmarks SET title = ?, lastModified = ? WHERE id = ?",
+                    (name, self._now_us(), int(row["id"])),
+                )
+                self._touch_folder(parent_id)
+                self.conn.commit()
             return int(row["id"])
 
         pos = self._resolve_position(parent_id, position)
@@ -791,3 +802,8 @@ def _root_alias_key(name: str) -> str:
     while s and not s[0].isalnum():
         s = s[1:].lstrip()
     return "".join(ch.lower() for ch in s if ch.isalnum())
+
+
+def _has_leading_emoji(name: str) -> bool:
+    s = (name or "").strip()
+    return bool(s and not s[0].isalnum())

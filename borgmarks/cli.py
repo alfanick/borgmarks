@@ -14,7 +14,7 @@ from .cache_sqlite import CacheEntry, init_cache, load_entries, upsert_entries
 from .classify import classify_bookmarks
 from .config import load_settings
 from .domain_lang import domain_of, guess_lang
-from .firefox_sync import apply_bookmarks_to_firefox
+from .firefox_sync import SyncStats, apply_bookmarks_to_firefox
 from .fetch import fetch_many
 from .folder_emoji import enrich_folder_emojis
 from .log import LogConfig, get_logger, setup_logging
@@ -309,11 +309,6 @@ def _cmd_organize(args, cfg) -> int:
 
     # Leaf folder cap
     enforce_leaf_limits(bookmarks, leaf_max_links=cfg.leaf_max_links, max_depth=cfg.max_depth)
-    if openai_enabled and cfg.openai_folder_emoji_enrich:
-        # Apply missing folder emojis across the whole tree (existing + new),
-        # but never replace already present emoji prefixes.
-        enrich_folder_emojis(bookmarks, cfg)
-        _normalize_category_paths(bookmarks)
     if not openai_enabled:
         # Keep tags normalized/capped even without OpenAI calls.
         prev = cfg.openai_tags_enrich
@@ -324,6 +319,34 @@ def _cmd_organize(args, cfg) -> int:
             cfg.openai_tags_enrich = prev
     elif cfg.openai_tags_enrich:
         enrich_bookmark_tags(bookmarks, cfg)
+
+    primary_sync: SyncStats | None = None
+    secondary_sync: SyncStats | None = None
+    if args.apply_firefox:
+        try:
+            primary_sync = apply_bookmarks_to_firefox(
+                firefox_places,
+                bookmarks,
+                favicons_db_path=favicons_db,
+                apply_icons=False,
+                dedupe=True,
+            )
+            _log_firefox_sync_stats("phase-1 links/tags", primary_sync)
+        except Exception as e:
+            log.error("Failed to apply phase-1 links/tags to Firefox places.sqlite: %s", e)
+            return _finish(2)
+
+    if openai_enabled and cfg.openai_folder_emoji_enrich:
+        # Apply missing folder emojis across the whole tree (existing + new),
+        # but never replace already present emoji prefixes.
+        try:
+            enrich_folder_emojis(bookmarks, cfg)
+            _normalize_category_paths(bookmarks)
+        except Exception as e:
+            log.warning(
+                "Folder emoji enrichment failed after links were applied; keeping existing links unchanged: %s",
+                e,
+            )
 
     _log_link_progress(bookmarks, phase="organize")
 
@@ -368,20 +391,26 @@ def _cmd_organize(args, cfg) -> int:
 
     if args.apply_firefox:
         try:
-            sync = apply_bookmarks_to_firefox(firefox_places, bookmarks, favicons_db_path=favicons_db)
-            log.info(
-                "Applied to Firefox DB: touched=%d added=%d moved=%d tagged=%d icons=%d deduped_bookmarks=%d deduped_favicons=%d",
-                sync.touched_links,
-                sync.added_links,
-                sync.moved_links,
-                sync.tagged_links,
-                sync.icon_links,
-                sync.deduped_bookmark_rows,
-                sync.deduped_favicon_rows,
+            secondary_sync = apply_bookmarks_to_firefox(
+                firefox_places,
+                bookmarks,
+                favicons_db_path=favicons_db,
+                apply_icons=True,
+                dedupe=False,
             )
+            _log_firefox_sync_stats("phase-2 emoji/icons", secondary_sync)
         except Exception as e:
-            log.error("Failed to apply to Firefox places.sqlite: %s", e)
-            return _finish(2)
+            if primary_sync is not None:
+                log.warning(
+                    "Phase-2 emoji/icons apply failed; phase-1 links are already persisted in Firefox: %s",
+                    e,
+                )
+            else:
+                log.error("Failed to apply to Firefox places.sqlite: %s", e)
+                return _finish(2)
+
+        combined = _merge_sync_stats(primary_sync, secondary_sync)
+        _log_firefox_sync_stats("combined", combined)
 
     # Store current bookmark state in cache (including categories/tags and summaries).
     upsert_entries(cache_db, [_cache_entry_from_bookmark(b) for b in bookmarks])
@@ -678,6 +707,36 @@ def _log_link_progress(bookmarks: Iterable, *, phase: str) -> None:
         domain = (getattr(b, "domain", "") or "").strip() or "unknown-domain"
         category = "/".join(getattr(b, "assigned_path", None) or getattr(b, "folder_path", None) or ["Uncategorized"])
         log.info("Link [%d/%d] - %s - %s (phase=%s)", i, total, domain, category, phase)
+
+
+def _merge_sync_stats(primary: SyncStats | None, secondary: SyncStats | None) -> SyncStats:
+    p = primary or SyncStats()
+    s = secondary or SyncStats()
+    return SyncStats(
+        added_links=int(p.added_links) + int(s.added_links),
+        moved_links=int(p.moved_links) + int(s.moved_links),
+        tagged_links=int(p.tagged_links) + int(s.tagged_links),
+        touched_links=int(p.touched_links) + int(s.touched_links),
+        icon_links=int(p.icon_links) + int(s.icon_links),
+        icon_errors=int(p.icon_errors) + int(s.icon_errors),
+        deduped_bookmark_rows=int(p.deduped_bookmark_rows) + int(s.deduped_bookmark_rows),
+        deduped_favicon_rows=int(p.deduped_favicon_rows) + int(s.deduped_favicon_rows),
+    )
+
+
+def _log_firefox_sync_stats(label: str, sync: SyncStats) -> None:
+    log.info(
+        "Applied to Firefox DB (%s): touched=%d added=%d moved=%d tagged=%d icons=%d icon_errors=%d deduped_bookmarks=%d deduped_favicons=%d",
+        label,
+        sync.touched_links,
+        sync.added_links,
+        sync.moved_links,
+        sync.tagged_links,
+        sync.icon_links,
+        sync.icon_errors,
+        sync.deduped_bookmark_rows,
+        sync.deduped_favicon_rows,
+    )
 
 
 def _apply_cache_entry(b, c: CacheEntry) -> None:

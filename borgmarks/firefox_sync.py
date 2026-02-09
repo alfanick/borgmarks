@@ -33,6 +33,7 @@ class SyncStats:
     tagged_links: int = 0
     touched_links: int = 0
     icon_links: int = 0
+    icon_errors: int = 0
     deduped_bookmark_rows: int = 0
     deduped_favicon_rows: int = 0
 
@@ -42,10 +43,12 @@ def apply_bookmarks_to_firefox(
     bookmarks: Iterable[Bookmark],
     *,
     favicons_db_path: Optional[Path] = None,
+    apply_icons: bool = True,
+    dedupe: bool = True,
 ) -> SyncStats:
     stats = SyncStats()
     rows = list(bookmarks)
-    total = len(rows)
+    total_links = len(rows)
     with ExitStack() as stack:
         db = stack.enter_context(PlacesDB(places_db_path, readonly=False))
         favicon_db = None
@@ -54,9 +57,10 @@ def apply_bookmarks_to_firefox(
             if candidate.supports_schema():
                 favicon_db = candidate
 
-        stats.deduped_bookmark_rows = db.dedupe_bookmark_links_by_url()
-        if favicon_db is not None:
-            stats.deduped_favicon_rows = favicon_db.dedupe()
+        if dedupe:
+            stats.deduped_bookmark_rows = db.dedupe_bookmark_links_by_url()
+            if favicon_db is not None:
+                stats.deduped_favicon_rows = favicon_db.dedupe()
 
         existing = db.read_all(include_tag_links=False)
         existing_by_url: Dict[str, int] = {}
@@ -75,7 +79,7 @@ def apply_bookmarks_to_firefox(
             tags = [t for t in (b.tags or []) if str(t).strip()]
             category = "/".join(b.assigned_path or b.folder_path or ["Uncategorized"])
             domain = (b.domain or "").strip() or "unknown-domain"
-            log.info("Link [%d/%d] - %s - %s (phase=apply)", idx, total, domain, category)
+            log.info("Link [%d/%d] - %s - %s (phase=apply-links)", idx, total_links, domain, category)
 
             root_id, rel_path = _resolve_target_root_and_relpath(db, b.assigned_path or b.folder_path or [])
             target_parent_id = db.ensure_folder_path(root_id, rel_path)
@@ -99,12 +103,28 @@ def apply_bookmarks_to_firefox(
                     after = len(db.read_tag(tag))
                     if after > before:
                         stats.tagged_links += 1
-            icon_uri = (b.meta.get("icon_uri") or "").strip()
-            if favicon_db is not None and icon_uri:
-                page_hash = db.get_place_url_hash(url)
-                if favicon_db.set_page_icon(page_url=url, icon_url=icon_uri, page_url_hash=page_hash):
-                    stats.icon_links += 1
             stats.touched_links += 1
+
+        if apply_icons and favicon_db is not None:
+            icon_rows = [b for b in rows if normalize_url(b.final_url or b.url) and (b.meta.get("icon_uri") or "").strip()]
+            total_icons = len(icon_rows)
+            for idx, b in enumerate(icon_rows, start=1):
+                url = normalize_url(b.final_url or b.url)
+                if not url:
+                    continue
+                icon_uri = (b.meta.get("icon_uri") or "").strip()
+                if not icon_uri:
+                    continue
+                domain = (b.domain or "").strip() or "unknown-domain"
+                log.info("Icon [%d/%d] - %s (phase=apply-icons)", idx, total_icons, domain)
+                try:
+                    page_hash = db.get_place_url_hash(url)
+                    if favicon_db.set_page_icon(page_url=url, icon_url=icon_uri, page_url_hash=page_hash):
+                        stats.icon_links += 1
+                except Exception as e:
+                    stats.icon_errors += 1
+                    log.warning("Failed to set favicon for %s: %s", url, e)
+
         # Keep references consistent and fail fast if DB is not coherent.
         db.recompute_foreign_count()
         db.validate_integrity()

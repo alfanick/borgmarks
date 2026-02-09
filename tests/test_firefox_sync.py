@@ -256,3 +256,28 @@ def test_apply_bookmarks_dedupes_existing_duplicates_in_places_and_favicons(tmp_
         assert page_cnt == 1
         assert icon_cnt == 1
         assert map_cnt == 1
+
+
+def test_apply_bookmarks_keeps_links_when_favicon_phase_fails(tmp_path: Path, monkeypatch):
+    db_path = tmp_path / "places.sqlite"
+    fav_path = tmp_path / "favicons.sqlite"
+    _mk_db(db_path)
+    _mk_favicons_db(fav_path)
+
+    def _boom(*_args, **_kwargs):
+        raise RuntimeError("favicon write failed")
+
+    monkeypatch.setattr("borgmarks.favicons_db.FaviconsDB.set_page_icon", _boom)
+
+    b = Bookmark(id="b1", title="A", url="https://example.com/new-link")
+    b.assigned_path = ["Bookmarks Menu", "Tools"]
+    b.meta["icon_uri"] = "https://example.com/favicon.ico"
+
+    s = apply_bookmarks_to_firefox(db_path, [b], favicons_db_path=fav_path, apply_icons=True)
+    assert s.added_links == 1
+    assert s.icon_links == 0
+    assert s.icon_errors == 1
+
+    with PlacesDB(db_path, readonly=True) as db:
+        urls = {x.url for x in db.read_all(include_tag_links=False)}
+        assert "https://example.com/new-link" in urls

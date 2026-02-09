@@ -156,3 +156,46 @@ def test_cli_skips_openai_when_cache_has_summary_and_categories(tmp_path: Path, 
     )
     assert rc == 0
     assert (profile / "bookmarks.organized.html").exists()
+
+
+def test_cli_apply_firefox_persists_links_even_if_folder_emoji_fails(tmp_path: Path, monkeypatch):
+    profile = tmp_path / "profile"
+    _mk_profile(profile)
+    ios = Path(__file__).parent / "fixtures" / "sample_bookmarks.html"
+
+    def _fake_classify(bookmarks, _cfg):
+        for b in bookmarks:
+            if not b.assigned_path:
+                b.assigned_path = ["Bookmarks Menu", "Reading"]
+        return {b.id for b in bookmarks}
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setattr("borgmarks.cli.classify_bookmarks", _fake_classify)
+    monkeypatch.setattr("borgmarks.cli.enrich_folder_emojis", lambda *_a, **_kw: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    rc = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios),
+            "--firefox-profile",
+            str(profile),
+            "--apply-firefox",
+            "--no-fetch",
+            "--skip-cache",
+        ]
+    )
+    assert rc == 0
+
+    with sqlite3.connect(profile / "places.sqlite") as conn:
+        count = int(
+            conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM moz_bookmarks b
+                JOIN moz_places p ON p.id = b.fk
+                WHERE b.type = 1 AND p.url LIKE 'https://%'
+                """
+            ).fetchone()[0]
+        )
+    assert count >= 3

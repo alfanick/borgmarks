@@ -125,6 +125,19 @@ def test_add_folder_dedupes_emoji_and_plain_names(tmp_path: Path):
         assert f3 == f4
 
 
+def test_add_folder_upgrades_plain_name_to_emoji_variant(tmp_path: Path):
+    db_path = tmp_path / "places.sqlite"
+    _mk_places_db(db_path)
+    with PlacesDB(db_path, readonly=False) as db:
+        shopping = db.ensure_folder_path(db.get_root_folder_id("toolbar"), ["Shopping"])
+        fid_plain = db.add_folder(shopping, "Clothing")
+        fid_emoji = db.add_folder(shopping, "👕 Clothing")
+        assert fid_plain == fid_emoji
+        row = db.conn.execute("SELECT title FROM moz_bookmarks WHERE id = ?", (fid_plain,)).fetchone()
+        assert row is not None
+        assert (row[0] or "").strip() == "👕 Clothing"
+
+
 def test_ensure_folder_path_handles_toolbar_and_menu_roots(tmp_path: Path):
     db_path = tmp_path / "places.sqlite"
     _mk_places_db(db_path)
