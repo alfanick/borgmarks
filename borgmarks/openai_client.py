@@ -5,13 +5,18 @@ import logging
 import re
 import time
 from dataclasses import dataclass
-from typing import Any, List, Optional
+from email.utils import parsedate_to_datetime
+from typing import Any, Callable, List, Optional, TypeVar
 
 from pydantic import BaseModel, Field
 
 from .log import get_logger
 
 log = get_logger(__name__)
+_OPENAI_RETRY_MAX_ATTEMPTS = 3
+_OPENAI_RETRY_BASE_DELAY_S = 1.0
+
+T = TypeVar("T")
 
 try:
     from openai import OpenAI
@@ -118,7 +123,7 @@ def classify_batch(
 ) -> OpenAIResult:
     ensure_openai_available()
     t0 = time.time()
-    client = OpenAI(timeout=timeout_s)
+    client = OpenAI(timeout=timeout_s, max_retries=0)
     log.info(
         "OpenAI request start (%s %s): model=%s timeout_s=%d max_output_tokens=%d",
         phase_label,
@@ -131,17 +136,24 @@ def classify_batch(
     raw_json_payload: dict[str, Any] | None = None
     request_extra = _request_extras(use_browser_tool=use_browser_tool, reasoning_effort=reasoning_effort)
     try:
-        resp = client.responses.parse(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_payload},
-            ],
-            text_format=AssignmentBatch,
-            max_output_tokens=max_output_tokens,
-            **request_extra,
+        resp = _call_with_backoff(
+            call=lambda: client.responses.parse(
+                model=model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_payload},
+                ],
+                text_format=AssignmentBatch,
+                max_output_tokens=max_output_tokens,
+                **request_extra,
+            ),
+            phase_label=phase_label,
+            batch_label=batch_label,
+            op_label="parse",
         )
     except Exception as e:
+        if _is_rate_limit_error(e):
+            raise
         log.warning(
             "OpenAI parse() failed (%s %s): %s. Retrying without max_output_tokens.",
             phase_label,
@@ -153,14 +165,19 @@ def classify_batch(
             request_extra = {}
         try:
             # Compatibility fallback for SDK/pydantic combos that fail on max_output_tokens/parse internals.
-            resp = client.responses.parse(
-                model=model,
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_payload},
-                ],
-                text_format=AssignmentBatch,
-                **request_extra,
+            resp = _call_with_backoff(
+                call=lambda: client.responses.parse(
+                    model=model,
+                    input=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_payload},
+                    ],
+                    text_format=AssignmentBatch,
+                    **request_extra,
+                ),
+                phase_label=phase_label,
+                batch_label=batch_label,
+                op_label="parse-retry",
             )
         except Exception as e2:
             log.warning(
@@ -234,7 +251,7 @@ def suggest_folder_emojis(
 ) -> OpenAIFolderEmojiResult:
     ensure_openai_available()
     t0 = time.time()
-    client = OpenAI(timeout=timeout_s)
+    client = OpenAI(timeout=timeout_s, max_retries=0)
     phase_label = "folder-emoji"
     log.info(
         "OpenAI request start (%s %s): model=%s timeout_s=%d max_output_tokens=%d",
@@ -248,17 +265,24 @@ def suggest_folder_emojis(
     raw_json_payload: dict[str, Any] | None = None
     request_extra = _request_extras(use_browser_tool=use_browser_tool, reasoning_effort=reasoning_effort)
     try:
-        resp = client.responses.parse(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_payload},
-            ],
-            text_format=FolderEmojiBatch,
-            max_output_tokens=max_output_tokens,
-            **request_extra,
+        resp = _call_with_backoff(
+            call=lambda: client.responses.parse(
+                model=model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_payload},
+                ],
+                text_format=FolderEmojiBatch,
+                max_output_tokens=max_output_tokens,
+                **request_extra,
+            ),
+            phase_label=phase_label,
+            batch_label=batch_label,
+            op_label="parse",
         )
     except Exception as e:
+        if _is_rate_limit_error(e):
+            raise
         log.warning(
             "OpenAI parse() failed (%s %s): %s. Retrying without max_output_tokens.",
             phase_label,
@@ -268,14 +292,19 @@ def suggest_folder_emojis(
         if request_extra:
             request_extra = {}
         try:
-            resp = client.responses.parse(
-                model=model,
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_payload},
-                ],
-                text_format=FolderEmojiBatch,
-                **request_extra,
+            resp = _call_with_backoff(
+                call=lambda: client.responses.parse(
+                    model=model,
+                    input=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_payload},
+                    ],
+                    text_format=FolderEmojiBatch,
+                    **request_extra,
+                ),
+                phase_label=phase_label,
+                batch_label=batch_label,
+                op_label="parse-retry",
             )
         except Exception as e2:
             log.warning(
@@ -349,7 +378,7 @@ def suggest_tags_for_tree(
 ) -> OpenAITagResult:
     ensure_openai_available()
     t0 = time.time()
-    client = OpenAI(timeout=timeout_s)
+    client = OpenAI(timeout=timeout_s, max_retries=0)
     phase_label = "tagger"
     log.info(
         "OpenAI request start (%s %s): model=%s timeout_s=%d max_output_tokens=%d",
@@ -363,17 +392,24 @@ def suggest_tags_for_tree(
     raw_json_payload: dict[str, Any] | None = None
     request_extra = _request_extras(use_browser_tool=use_browser_tool, reasoning_effort=reasoning_effort)
     try:
-        resp = client.responses.parse(
-            model=model,
-            input=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_payload},
-            ],
-            text_format=TagBatch,
-            max_output_tokens=max_output_tokens,
-            **request_extra,
+        resp = _call_with_backoff(
+            call=lambda: client.responses.parse(
+                model=model,
+                input=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_payload},
+                ],
+                text_format=TagBatch,
+                max_output_tokens=max_output_tokens,
+                **request_extra,
+            ),
+            phase_label=phase_label,
+            batch_label=batch_label,
+            op_label="parse",
         )
     except Exception as e:
+        if _is_rate_limit_error(e):
+            raise
         log.warning(
             "OpenAI parse() failed (%s %s): %s. Retrying without max_output_tokens.",
             phase_label,
@@ -383,14 +419,19 @@ def suggest_tags_for_tree(
         if request_extra:
             request_extra = {}
         try:
-            resp = client.responses.parse(
-                model=model,
-                input=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_payload},
-                ],
-                text_format=TagBatch,
-                **request_extra,
+            resp = _call_with_backoff(
+                call=lambda: client.responses.parse(
+                    model=model,
+                    input=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_payload},
+                    ],
+                    text_format=TagBatch,
+                    **request_extra,
+                ),
+                phase_label=phase_label,
+                batch_label=batch_label,
+                op_label="parse-retry",
             )
         except Exception as e2:
             log.warning(
@@ -527,23 +568,35 @@ def _create_raw_response_json(
         {"role": "user", "content": user_payload},
     ]
     try:
-        raw_resp = client.responses.with_raw_response.create(
-            model=model,
-            input=request_input,
-            max_output_tokens=max_output_tokens,
-            **(request_extra or {}),
+        raw_resp = _call_with_backoff(
+            call=lambda: client.responses.with_raw_response.create(
+                model=model,
+                input=request_input,
+                max_output_tokens=max_output_tokens,
+                **(request_extra or {}),
+            ),
+            phase_label=phase_label,
+            batch_label=batch_label,
+            op_label="raw-create",
         )
     except Exception as e:
+        if _is_rate_limit_error(e):
+            raise
         log.warning(
             "OpenAI raw create() with max_output_tokens failed (%s %s): %s. Retrying without max_output_tokens.",
             phase_label,
             batch_label,
             e,
         )
-        raw_resp = client.responses.with_raw_response.create(
-            model=model,
-            input=request_input,
-            **(request_extra or {}),
+        raw_resp = _call_with_backoff(
+            call=lambda: client.responses.with_raw_response.create(
+                model=model,
+                input=request_input,
+                **(request_extra or {}),
+            ),
+            phase_label=phase_label,
+            batch_label=batch_label,
+            op_label="raw-create-retry",
         )
     payload = raw_resp.json()
     if not isinstance(payload, dict):
@@ -559,6 +612,74 @@ def _request_extras(*, use_browser_tool: bool, reasoning_effort: str) -> dict[st
     if eff in {"low", "medium", "high"}:
         out["reasoning"] = {"effort": eff}
     return out
+
+
+def _call_with_backoff(
+    *,
+    call: Callable[[], T],
+    phase_label: str,
+    batch_label: str,
+    op_label: str,
+) -> T:
+    attempt = 1
+    while True:
+        try:
+            return call()
+        except Exception as e:
+            if attempt >= _OPENAI_RETRY_MAX_ATTEMPTS or not _is_rate_limit_error(e):
+                raise
+            delay = _retry_delay_seconds(exc=e, attempt=attempt)
+            log.warning(
+                "OpenAI %s rate-limited (%s %s) attempt %d/%d. Backing off %.1fs.",
+                op_label,
+                phase_label,
+                batch_label,
+                attempt,
+                _OPENAI_RETRY_MAX_ATTEMPTS,
+                delay,
+            )
+            time.sleep(delay)
+            attempt += 1
+
+
+def _is_rate_limit_error(exc: Exception) -> bool:
+    status_code = getattr(exc, "status_code", None)
+    if status_code == 429:
+        return True
+    response = getattr(exc, "response", None)
+    if response is not None and getattr(response, "status_code", None) == 429:
+        return True
+    text = str(exc).lower()
+    return "too many requests" in text or "rate limit" in text
+
+
+def _retry_delay_seconds(*, exc: Exception, attempt: int) -> float:
+    # Prefer server-provided retry windows when available.
+    response = getattr(exc, "response", None)
+    if response is not None:
+        headers = getattr(response, "headers", {}) or {}
+        retry_after = headers.get("retry-after") if hasattr(headers, "get") else None
+        if retry_after:
+            parsed = _parse_retry_after_seconds(str(retry_after))
+            if parsed is not None and parsed > 0:
+                return float(parsed)
+    return float(_OPENAI_RETRY_BASE_DELAY_S * (2 ** max(0, attempt - 1)))
+
+
+def _parse_retry_after_seconds(value: str) -> Optional[float]:
+    raw = (value or "").strip()
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except Exception:
+        pass
+    try:
+        dt = parsedate_to_datetime(raw)
+        now = time.time()
+        return max(0.0, dt.timestamp() - now)
+    except Exception:
+        return None
 
 
 def _parse_assignment_batch_from_response_json(
