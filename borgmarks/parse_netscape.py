@@ -40,6 +40,8 @@ def _walk_dl(dl, current_path: List[str], out: List[Bookmark]) -> None:
     for dt in dts:
         h3 = dt.find("h3", recursive=False)
         if h3 is not None:
+            if str(h3.get("data-borg-seed", "")).strip() == "1":
+                continue
             name = _WS_RE.sub(" ", h3.get_text(strip=True))
             sub_dl = dt.find_next_sibling("dl")
             if sub_dl is None:
@@ -52,6 +54,8 @@ def _walk_dl(dl, current_path: List[str], out: List[Bookmark]) -> None:
 
         a = dt.find("a", recursive=False)
         if a is not None and a.get("href"):
+            if str(a.get("data-borg-seed", "")).strip() == "1":
+                continue
             title = _WS_RE.sub(" ", a.get_text(strip=True))
             url = a.get("href")
             add_date = _maybe_int(a.get("add_date"))

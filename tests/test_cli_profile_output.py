@@ -1,5 +1,6 @@
 import sqlite3
 from pathlib import Path
+import json
 
 from borgmarks.cache_sqlite import CacheEntry, init_cache, upsert_entries
 from borgmarks.cli import _url_identity, main
@@ -62,6 +63,19 @@ def _mk_profile(profile: Path) -> None:
         conn.commit()
     finally:
         conn.close()
+
+
+def _meta_semantic_index(meta_path: Path):
+    rows = [json.loads(x) for x in meta_path.read_text(encoding="utf-8").splitlines() if x.strip()]
+    return {
+        r["url"]: (
+            tuple(r.get("path") or []),
+            tuple(r.get("tags") or []),
+            r.get("http_status"),
+            r.get("summary"),
+        )
+        for r in rows
+    }
 
 
 def test_cli_writes_output_to_firefox_profile_and_ignores_out(tmp_path: Path):
@@ -199,3 +213,96 @@ def test_cli_apply_firefox_persists_links_even_if_folder_emoji_fails(tmp_path: P
             ).fetchone()[0]
         )
     assert count >= 3
+
+
+def test_cli_no_openai_no_fetch_second_run_is_stable_with_cache(tmp_path: Path):
+    profile = tmp_path / "profile"
+    _mk_profile(profile)
+    ios = Path(__file__).parent / "fixtures" / "sample_bookmarks.html"
+
+    rc1 = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios),
+            "--firefox-profile",
+            str(profile),
+            "--no-openai",
+            "--no-fetch",
+            "--skip-cache",
+        ]
+    )
+    assert rc1 == 0
+
+    out_html = profile / "bookmarks.organized.html"
+    out_meta = profile / "bookmarks.organized.meta.jsonl"
+    cache_db = profile / "borg_cache.sqlite"
+    assert out_html.exists()
+    assert out_meta.exists()
+    assert cache_db.exists()
+    first_html = out_html.read_text(encoding="utf-8")
+    first_meta = out_meta.read_text(encoding="utf-8")
+
+    rc2 = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios),
+            "--firefox-profile",
+            str(profile),
+            "--no-openai",
+            "--no-fetch",
+        ]
+    )
+    assert rc2 == 0
+
+    second_html = out_html.read_text(encoding="utf-8")
+    second_meta = out_meta.read_text(encoding="utf-8")
+    assert second_html == first_html
+    assert second_meta == first_meta
+
+
+def test_cli_no_openai_no_fetch_golden_reingest_is_stable(tmp_path: Path):
+    profile = tmp_path / "profile"
+    _mk_profile(profile)
+    ios = Path(__file__).parent / "fixtures" / "sample_bookmarks.html"
+
+    # A -> B
+    rc1 = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios),
+            "--firefox-profile",
+            str(profile),
+            "--no-openai",
+            "--no-fetch",
+            "--skip-cache",
+        ]
+    )
+    assert rc1 == 0
+    out_html = profile / "bookmarks.organized.html"
+    out_meta = profile / "bookmarks.organized.meta.jsonl"
+    assert out_html.exists()
+    b_html = out_html.read_text(encoding="utf-8")
+    assert out_meta.exists()
+    b_meta_sem = _meta_semantic_index(out_meta)
+
+    # B -> C (re-ingest previous golden output)
+    rc2 = main(
+        [
+            "organize",
+            "--ios-html",
+            str(out_html),
+            "--firefox-profile",
+            str(profile),
+            "--no-openai",
+            "--no-fetch",
+        ]
+    )
+    assert rc2 == 0
+    c_html = out_html.read_text(encoding="utf-8")
+    c_meta_sem = _meta_semantic_index(out_meta)
+    assert c_html == b_html
+    # IDs/order may differ on re-ingest; semantic data must stay stable.
+    assert c_meta_sem == b_meta_sem

@@ -50,13 +50,13 @@ def write_firefox_html(
     lines.append('    <DT><H3 PERSONAL_TOOLBAR_FOLDER="true">Bookmarks Toolbar</H3>')
     lines.append("    <DL><p>")
     for fname in toolbar_spec.get("folders", []):
-        lines.append(f"        <DT><H3>{html.escape(str(fname))}</H3>")
+        lines.append(f'        <DT><H3 data-borg-seed="1">{html.escape(str(fname))}</H3>')
         lines.append("        <DL><p></DL><p>")
     for link in toolbar_spec.get("links", []):
         title = str(link.get("title", link.get("url", "")))
         url = str(link.get("url", ""))
         tags = link.get("tags") or []
-        attrs = [f'HREF="{html.escape(url, quote=True)}"']
+        attrs = [f'HREF="{html.escape(url, quote=True)}"', 'data-borg-seed="1"']
         if tags:
             attrs.append(f'TAGS="{html.escape(" ".join(map(str, tags)), quote=True)}"')
         lines.append(f"        <DT><A {' '.join(attrs)}>{html.escape(title)}</A>")

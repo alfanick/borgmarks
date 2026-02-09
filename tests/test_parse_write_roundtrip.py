@@ -122,3 +122,23 @@ def test_write_uses_favicon_or_emoji_fallback_icon(tmp_path: Path):
     text = out.read_text(encoding="utf-8")
     assert 'ICON_URI="https://ex.com/favicon.ico"' in text
     assert 'ICON="data:image/svg+xml;utf8,' in text
+
+
+def test_parse_ignores_seeded_toolbar_entries(tmp_path: Path):
+    html = """<!DOCTYPE NETSCAPE-Bookmark-file-1>
+<TITLE>Bookmarks</TITLE>
+<H1>Bookmarks</H1>
+<DL><p>
+  <DT><H3 PERSONAL_TOOLBAR_FOLDER="true">Bookmarks Toolbar</H3>
+  <DL><p>
+    <DT><A HREF="https://seed.example/" data-borg-seed="1">Seed</A>
+    <DT><A HREF="https://keep.example/">Keep</A>
+  </DL><p>
+</DL><p>
+"""
+    src = tmp_path / "seeded.html"
+    src.write_text(html, encoding="utf-8")
+    bms, _ = parse_bookmarks_html(src)
+    urls = [b.url for b in bms]
+    assert "https://seed.example/" not in urls
+    assert "https://keep.example/" in urls
