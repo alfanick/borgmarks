@@ -39,6 +39,8 @@ class Settings:
     openai_max_bookmarks: int = 0  # v0.0.5 default: classify all (set >0 to cap)
     openai_reclassify: bool = True
     openai_max_output_tokens: int = 100_000_000
+    reclassify_conservative: bool = True
+    reclassify_min_folder_gain: int = 2
 
     # Fetching
     fetch_backend: str = "httpx"  # httpx | curl
@@ -75,6 +77,8 @@ class Settings:
         s.openai_max_bookmarks = _env_int("BORG_OPENAI_MAX_BOOKMARKS", s.openai_max_bookmarks)
         s.openai_reclassify = _env_bool("BORG_OPENAI_RECLASSIFY", s.openai_reclassify)
         s.openai_max_output_tokens = _env_int("BORG_OPENAI_MAX_OUTPUT_TOKENS", s.openai_max_output_tokens)
+        s.reclassify_conservative = _env_bool("BORG_RECLASSIFY_CONSERVATIVE", s.reclassify_conservative)
+        s.reclassify_min_folder_gain = _env_int("BORG_RECLASSIFY_MIN_FOLDER_GAIN", s.reclassify_min_folder_gain)
 
         s.fetch_backend = _env_str("BORG_FETCH_BACKEND", s.fetch_backend)
         s.fetch_timeout_s = _env_int("BORG_FETCH_TIMEOUT_S", s.fetch_timeout_s)

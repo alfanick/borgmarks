@@ -4,6 +4,7 @@ AI-assisted bookmark organizer for a Linux + Podman workflow.
 
 **Input**
 - An iOS/iPadOS Safari bookmarks export in “Netscape bookmark HTML” format (like `Bookmarks.html`).
+- Optional Firefox profile (`places.sqlite`) bookmarks, merged at ingestion time with equal priority.
 - Optional live page data fetched from each URL (status, redirect target, title, description, snippet, HTML).
 - Optional SQLite cache in `out/bookmarks-cache.sqlite` (or `--state-dir`) for reuse between runs.
 
@@ -21,6 +22,7 @@ AI-assisted bookmark organizer for a Linux + Podman workflow.
   - a folder path per bookmark (max depth 4)
   - short tags (Firefox supports the `TAGS` attribute)
 - Runs classification in two passes: classify, then reclassify using prior classification + summary.
+- Reclassification is conservative by default to avoid noisy lateral moves between similar folders.
 - Enforces: **≤ 20 links per leaf folder** by auto-splitting big folders.
 - Removes exact and near-duplicate links after redirect normalization.
 - Adds `[PL]`, `[DE]`, etc. prefixes to non-English titles (**English is unprefixed**).
@@ -59,6 +61,8 @@ Useful knobs:
 - `BORG_OPENAI_MAX_BOOKMARKS`: default `0` (classify all). Set `>0` to cap.
 - `BORG_OPENAI_TIMEOUT_S`: default is 900 (15 minutes).
 - `BORG_OPENAI_RECLASSIFY=1`: enable pass-2 refinement.
+- `BORG_RECLASSIFY_CONSERVATIVE=1`: keep reclassify conservative (default).
+- `BORG_RECLASSIFY_MIN_FOLDER_GAIN=2`: minimum folder-size gain required for same-top reclass moves.
 - `BORG_FETCH_MAX_URLS`: cap URL fetching.
 - `BORG_FETCH_BACKEND=curl`: uses `curl` + `xargs -P` for parallel fetch (best-effort).
 - `--skip-cache`: recreate SQLite cache and ignore old cache entries.

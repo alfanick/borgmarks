@@ -16,6 +16,7 @@ from .config import load_settings
 from .domain_lang import domain_of, guess_lang
 from .fetch import fetch_many
 from .log import LogConfig, get_logger, setup_logging
+from .parse_firefox_places import parse_firefox_places
 from .parse_netscape import parse_bookmarks_html
 from .split import enforce_leaf_limits
 from .url_norm import normalize_url
@@ -48,7 +49,7 @@ def main(argv: List[str] | None = None) -> int:
 
     org = sub.add_parser("organize", help="Organize an iOS/Safari bookmarks HTML export for Firefox import.")
     org.add_argument("--ios-html", required=True, help="Input iOS/Safari bookmarks HTML export (Netscape format).")
-    org.add_argument("--firefox-profile", required=False, help="Firefox profile dir (optional, backup only today).")
+    org.add_argument("--firefox-profile", required=False, help="Firefox profile dir (optional, merged bookmark source + backup).")
     org.add_argument("--out", required=True, help="Output HTML path for Firefox import.")
     org.add_argument("--state-dir", required=False, help="State dir for sidecars (default: alongside --out).")
     org.add_argument("--log-level", default=None, help="DEBUG/INFO/WARN/ERROR (overrides env/config).")
@@ -89,11 +90,28 @@ def _cmd_organize(args, cfg) -> int:
         _backup_firefox_profile(Path(args.firefox_profile), state_dir)
 
     try:
-        bookmarks, _root_title = parse_bookmarks_html(ios_html)
+        ios_bookmarks, _root_title = parse_bookmarks_html(ios_html)
     except Exception as e:
         log.error("Failed to parse bookmarks HTML: %s", e)
         return 2
-    log.info("Parsed %d bookmarks from %s", len(bookmarks), ios_html)
+    log.info("Parsed %d bookmarks from iOS export: %s", len(ios_bookmarks), ios_html)
+
+    firefox_bookmarks = []
+    if args.firefox_profile:
+        try:
+            firefox_bookmarks = parse_firefox_places(Path(args.firefox_profile))
+            log.info(
+                "Parsed %d bookmarks from Firefox profile: %s",
+                len(firefox_bookmarks),
+                args.firefox_profile,
+            )
+        except Exception as e:
+            log.warning("Failed to parse Firefox places.sqlite (%s): %s", args.firefox_profile, e)
+
+    # Source merge happens before any normalization/dedupe so iOS and Firefox have equal priority.
+    bookmarks = list(ios_bookmarks) + list(firefox_bookmarks)
+    _assign_sequential_ids(bookmarks)
+    log.info("Merged %d total bookmarks from iOS + Firefox sources.", len(bookmarks))
 
     # Normalize + derive domain/lang + dedupe
     seen = set()
@@ -302,6 +320,11 @@ def _fallback_assign(bookmarks) -> None:
             b.assigned_path = ["News", "📺 Video"]
         else:
             b.assigned_path = ["Reading", "📥 Inbox"]
+
+
+def _assign_sequential_ids(bookmarks: Iterable) -> None:
+    for i, b in enumerate(bookmarks):
+        b.id = f"b{i + 1}"
 
 
 def _sanity_check_unique_link_counts(input_bookmarks: Iterable, output_bookmarks: Iterable) -> bool:

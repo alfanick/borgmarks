@@ -36,6 +36,8 @@ Rules:
 - Use only: prior classification, prior tags, and summary text.
 - Keep folder depth <= 4.
 - Reuse folder paths from folder_catalog whenever possible.
+- Be conservative: keep current_path unless there is clear improvement.
+- Avoid moving between closely related sibling folders (e.g. Camera <-> Video) unless strongly justified.
 - Avoid creating singleton folders; prefer placing multiple related links in the same folder.
 - Keep tags concise and lowercase.
 - Don't drop bookmarks.
@@ -110,6 +112,7 @@ def _classify_phase(
 
     id_to_bm: Dict[str, Bookmark] = {b.id: b for b in target}
     allowed_paths = {tuple(x["path"]) for x in folder_catalog if x.get("path")}
+    folder_sizes = {tuple(x["path"]): int(x.get("count", 0) or 0) for x in folder_catalog if x.get("path")}
     errors = 0
 
     def _run_batch(batch_idx: int, batch: List[Bookmark]):
@@ -138,6 +141,7 @@ def _classify_phase(
                     cfg=cfg,
                     assignments=res.parsed.assignments,
                     allowed_paths=allowed_paths,
+                    folder_sizes=folder_sizes,
                     phase_name=phase_name,
                     openai_ms=res.ms,
                 )
@@ -194,6 +198,7 @@ def _apply_assignments(
     cfg: Settings,
     assignments,
     allowed_paths: set[Tuple[str, ...]],
+    folder_sizes: Dict[Tuple[str, ...], int],
     phase_name: str,
     openai_ms: int,
 ) -> None:
@@ -213,6 +218,23 @@ def _apply_assignments(
         if phase_name == "reclassify" and allowed_paths and tuple(new_path) not in allowed_paths:
             # Enforce folder reuse in pass-2; if a new folder appears, keep previous folder.
             new_path = prev_path
+        elif phase_name == "reclassify" and cfg.reclassify_conservative:
+            allowed, reason = _allow_conservative_reclass_move(
+                prev_path=prev_path,
+                new_path=new_path,
+                folder_sizes=folder_sizes,
+                min_folder_gain=cfg.reclassify_min_folder_gain,
+            )
+            if not allowed:
+                target = b.domain or (b.final_url or b.url)
+                log.debug(
+                    "Keeping %s in %s (reclass move to %s blocked: %s)",
+                    target,
+                    "/".join(prev_path),
+                    "/".join(new_path),
+                    reason,
+                )
+                new_path = prev_path
 
         if phase_name == "reclassify" and new_path != prev_path:
             target = b.domain or (b.final_url or b.url)
@@ -253,3 +275,60 @@ def _folder_catalog(bookmarks: Sequence[Bookmark]) -> List[dict]:
     rows = [{"path": list(k), "count": v} for k, v in counts.items()]
     rows.sort(key=lambda x: (-x["count"], "/".join(x["path"]).lower()))
     return rows
+
+
+def _allow_conservative_reclass_move(
+    *,
+    prev_path: List[str],
+    new_path: List[str],
+    folder_sizes: Dict[Tuple[str, ...], int],
+    min_folder_gain: int,
+) -> Tuple[bool, str]:
+    if new_path == prev_path:
+        return True, "same-path"
+    if _is_generic_path(prev_path):
+        return True, "from-generic-path"
+
+    prev_size = folder_sizes.get(tuple(prev_path), 0)
+    new_size = folder_sizes.get(tuple(new_path), 0)
+    gain = new_size - prev_size
+    min_gain = max(0, int(min_folder_gain))
+    shared = _shared_prefix_len(prev_path, new_path)
+
+    same_top = bool(prev_path and new_path and _norm_token(prev_path[0]) == _norm_token(new_path[0]))
+    near_sibling = shared >= max(0, min(len(prev_path), len(new_path)) - 1)
+    strong_cluster = new_size >= max(3, prev_size + min_gain)
+
+    if near_sibling and not strong_cluster:
+        return False, f"near-sibling move without strong cluster (prev={prev_size}, new={new_size}, gain={gain})"
+    if same_top and gain < min_gain:
+        return False, f"same-top move below gain threshold (prev={prev_size}, new={new_size}, gain={gain})"
+    return True, "accepted"
+
+
+def _is_generic_path(path: List[str]) -> bool:
+    if not path:
+        return True
+    text = "/".join(path).lower()
+    generic_tokens = (
+        "unclassified",
+        "inbox",
+        "misc",
+        "other",
+        "archive",
+        "reading",
+        "overflow",
+    )
+    return any(tok in text for tok in generic_tokens)
+
+
+def _shared_prefix_len(a: List[str], b: List[str]) -> int:
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and _norm_token(a[i]) == _norm_token(b[i]):
+        i += 1
+    return i
+
+
+def _norm_token(s: str) -> str:
+    return "".join(ch.lower() for ch in s if ch.isalnum())
