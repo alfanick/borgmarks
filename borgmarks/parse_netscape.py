@@ -33,7 +33,11 @@ def parse_bookmarks_html(path: Path) -> Tuple[List[Bookmark], str]:
 
 
 def _walk_dl(dl, current_path: List[str], out: List[Bookmark]) -> None:
-    for dt in dl.find_all("dt", recursive=False):
+    # Netscape bookmark exports are often not strict HTML and some parsers
+    # nest sibling DT entries into each other. "nearest parent DL == current DL"
+    # keeps logical siblings at this level without crossing into child folders.
+    dts = [dt for dt in dl.find_all("dt") if dt.find_parent("dl") is dl]
+    for dt in dts:
         h3 = dt.find("h3", recursive=False)
         if h3 is not None:
             name = _WS_RE.sub(" ", h3.get_text(strip=True))
