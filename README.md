@@ -1,4 +1,4 @@
-# borgmarks 0.7.9
+# borgmarks 0.7.10
 
 Organize bookmarks from iOS/iPadOS Safari + Firefox with OpenAI, then either:
 - generate an importable Firefox HTML file (safe mode), or
@@ -39,7 +39,7 @@ podman machine start
 
 ```bash
 podman login ghcr.io -u YOUR_GITHUB_USERNAME
-podman pull ghcr.io/alfanick/borgmarks:v0.7.9
+podman pull ghcr.io/alfanick/borgmarks:v0.7.10
 ```
 
 ### 3. Prepare inputs
@@ -65,7 +65,7 @@ podman run --rm -it \
   -e BORG_OPENAI_JOBS=4 \
   -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
   -v "$PWD/tmp:/tmp:Z" \
-  ghcr.io/alfanick/borgmarks:v0.7.9 organize \
+  ghcr.io/alfanick/borgmarks:v0.7.10 organize \
     --firefox-profile /firefox \
     --skip-cache
 ```
@@ -82,7 +82,7 @@ podman run --rm -it \
   -v "$PWD/Bookmarks.html:/in/Bookmarks.html:Z" \
   -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
   -v "$PWD/tmp:/tmp:Z" \
-  ghcr.io/alfanick/borgmarks:v0.7.9 organize \
+  ghcr.io/alfanick/borgmarks:v0.7.10 organize \
     --ios-html /in/Bookmarks.html \
     --firefox-profile /firefox \
     --skip-cache
@@ -104,7 +104,7 @@ podman run --rm -it \
   -v "$PWD/Bookmarks.html:/in/Bookmarks.html:Z" \
   -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
   -v "$PWD/tmp:/tmp:Z" \
-  ghcr.io/alfanick/borgmarks:v0.7.9 organize \
+  ghcr.io/alfanick/borgmarks:v0.7.10 organize \
     --ios-html /in/Bookmarks.html \
     --firefox-profile /firefox \
     --skip-cache \

@@ -2,7 +2,7 @@ import sqlite3
 from pathlib import Path
 import json
 
-from borgmarks.cache_sqlite import CacheEntry, init_cache, upsert_entries
+from borgmarks.cache_sqlite import CacheEntry, init_cache, load_entries, upsert_entries
 from borgmarks.cli import _url_identity, main
 
 
@@ -76,6 +76,20 @@ def _meta_semantic_index(meta_path: Path):
         )
         for r in rows
     }
+
+
+def _write_bookmarks_html(path: Path, urls: list[str]) -> None:
+    lines = [
+        "<!DOCTYPE NETSCAPE-Bookmark-file-1>",
+        '<META HTTP-EQUIV="Content-Type" CONTENT="text/html; charset=UTF-8">',
+        "<TITLE>Bookmarks</TITLE>",
+        "<H1>Bookmarks</H1>",
+        "<DL><p>",
+    ]
+    for i, url in enumerate(urls, start=1):
+        lines.append(f'<DT><A HREF="{url}">Link {i}</A>')
+    lines.append("</DL><p>")
+    path.write_text("\n".join(lines), encoding="utf-8")
 
 
 def test_cli_writes_output_to_firefox_profile_and_ignores_out(tmp_path: Path):
@@ -156,6 +170,23 @@ def test_cli_skips_openai_when_cache_has_summary_and_categories(tmp_path: Path, 
 
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("OPENAI_KEY", raising=False)
+    called = {"classify": 0, "folder_emoji": 0, "tag_openai": 0}
+
+    def _classify_guard(*_a, **_kw):
+        called["classify"] += 1
+        raise AssertionError("classify_bookmarks should not run when cache has full OpenAI enrichment")
+
+    def _folder_emoji_guard(*_a, **_kw):
+        called["folder_emoji"] += 1
+        raise AssertionError("folder emoji OpenAI path should be skipped with full cache")
+
+    def _tag_openai_guard(*_a, **_kw):
+        called["tag_openai"] += 1
+        raise AssertionError("tag OpenAI path should be skipped with full cache")
+
+    monkeypatch.setattr("borgmarks.cli.classify_bookmarks", _classify_guard)
+    monkeypatch.setattr("borgmarks.cli.enrich_folder_emojis", _folder_emoji_guard)
+    monkeypatch.setattr("borgmarks.tagging.suggest_tags_for_tree", _tag_openai_guard)
 
     ios = Path(__file__).parent / "fixtures" / "sample_bookmarks.html"
     rc = main(
@@ -170,6 +201,123 @@ def test_cli_skips_openai_when_cache_has_summary_and_categories(tmp_path: Path, 
     )
     assert rc == 0
     assert (profile / "bookmarks.organized.html").exists()
+    assert called == {"classify": 0, "folder_emoji": 0, "tag_openai": 0}
+
+
+def test_cli_removed_input_link_is_not_restored_from_cache(tmp_path: Path):
+    profile = tmp_path / "profile"
+    _mk_profile(profile)
+    cache_db = profile / "borg_cache.sqlite"
+
+    urls_a = [
+        "https://alpha.example.com/",
+        "https://beta.example.com/",
+        "https://gamma.example.com/",
+    ]
+    urls_b = [
+        "https://alpha.example.com/",
+        "https://gamma.example.com/",
+    ]
+    removed = "https://beta.example.com/"
+
+    ios_a = tmp_path / "ios-a.html"
+    ios_b = tmp_path / "ios-b.html"
+    _write_bookmarks_html(ios_a, urls_a)
+    _write_bookmarks_html(ios_b, urls_b)
+
+    rc1 = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios_a),
+            "--firefox-profile",
+            str(profile),
+            "--no-openai",
+            "--no-fetch",
+            "--skip-cache",
+        ]
+    )
+    assert rc1 == 0
+
+    removed_key = _url_identity(removed)
+    assert removed_key in load_entries(cache_db, [removed_key])
+
+    rc2 = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios_b),
+            "--firefox-profile",
+            str(profile),
+            "--no-openai",
+            "--no-fetch",
+        ]
+    )
+    assert rc2 == 0
+
+    out_html = (profile / "bookmarks.organized.html").read_text(encoding="utf-8")
+    out_meta = (profile / "bookmarks.organized.meta.jsonl").read_text(encoding="utf-8")
+    assert removed not in out_html
+    assert removed not in out_meta
+    for u in urls_b:
+        assert u in out_html
+        assert u in out_meta
+
+    # Cache keeps old entries; output is derived from current input set.
+    assert removed_key in load_entries(cache_db, [removed_key])
+
+
+def test_cli_skip_cache_rebuild_uses_only_current_input_links(tmp_path: Path):
+    profile = tmp_path / "profile"
+    _mk_profile(profile)
+
+    # Seed a stale cache first.
+    ios_old = tmp_path / "ios-old.html"
+    old_urls = [
+        "https://old-one.example.com/",
+        "https://old-two.example.com/",
+    ]
+    _write_bookmarks_html(ios_old, old_urls)
+    rc_seed = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios_old),
+            "--firefox-profile",
+            str(profile),
+            "--no-openai",
+            "--no-fetch",
+            "--skip-cache",
+        ]
+    )
+    assert rc_seed == 0
+
+    # Re-run with different input and force cache recreation.
+    ios_new = tmp_path / "ios-new.html"
+    new_urls = [
+        "https://new-one.example.com/",
+        "https://new-two.example.com/",
+        "https://new-three.example.com/",
+    ]
+    _write_bookmarks_html(ios_new, new_urls)
+    rc = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios_new),
+            "--firefox-profile",
+            str(profile),
+            "--no-openai",
+            "--no-fetch",
+            "--skip-cache",
+        ]
+    )
+    assert rc == 0
+
+    out_meta = profile / "bookmarks.organized.meta.jsonl"
+    meta_rows = [json.loads(x) for x in out_meta.read_text(encoding="utf-8").splitlines() if x.strip()]
+    out_urls = {row.get("url") for row in meta_rows}
+    assert out_urls == set(new_urls)
 
 
 def test_cli_apply_firefox_persists_links_even_if_folder_emoji_fails(tmp_path: Path, monkeypatch):
