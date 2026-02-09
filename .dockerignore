@@ -1,0 +1,15 @@
+.git
+.gitignore
+.gitlab-ci.yml
+
+__pycache__
+*.pyc
+.pytest_cache
+
+.env
+.env.*
+
+in
+out
+Bookmarks.html
+tests
