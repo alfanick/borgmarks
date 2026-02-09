@@ -281,3 +281,20 @@ def test_apply_bookmarks_keeps_links_when_favicon_phase_fails(tmp_path: Path, mo
     with PlacesDB(db_path, readonly=True) as db:
         urls = {x.url for x in db.read_all(include_tag_links=False)}
         assert "https://example.com/new-link" in urls
+
+
+def test_apply_bookmarks_does_not_call_read_tag_in_hot_loop(tmp_path: Path, monkeypatch):
+    db_path = tmp_path / "places.sqlite"
+    _mk_db(db_path)
+
+    def _boom(*_args, **_kwargs):
+        raise AssertionError("read_tag() should not be called during apply hot loop")
+
+    monkeypatch.setattr("borgmarks.places_db.PlacesDB.read_tag", _boom)
+
+    b = Bookmark(id="b1", title="A", url="https://example.com/a")
+    b.assigned_path = ["Bookmarks Menu", "Dev"]
+    b.tags = ["video", "camera", "blog"]
+
+    s = apply_bookmarks_to_firefox(db_path, [b], favicons_db_path=None, apply_icons=False)
+    assert s.touched_links == 1

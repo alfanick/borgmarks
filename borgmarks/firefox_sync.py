@@ -98,10 +98,8 @@ def apply_bookmarks_to_firefox(
                 # Ensure title and tags converge in-place, idempotently.
                 link_id = db.add_link(target_parent_id, url, title, tags=[])
                 for tag in tags:
-                    before = len(db.read_tag(tag))
-                    db.add_link_tag(link_id, tag)
-                    after = len(db.read_tag(tag))
-                    if after > before:
+                    _tag_ref_id, created = db.add_link_tag(link_id, tag, return_created=True)
+                    if created:
                         stats.tagged_links += 1
             stats.touched_links += 1
 

@@ -422,7 +422,7 @@ class PlacesDB:
             raise ValueError("tag name cannot be empty")
         return self.add_folder(tags_root, name)
 
-    def add_link_tag(self, link_id: int, tag_name: str) -> int:
+    def add_link_tag(self, link_id: int, tag_name: str, *, return_created: bool = False):
         self._assert_writable()
         self._require_link(link_id)
         tag_folder_id = self.add_tag(tag_name)
@@ -439,7 +439,10 @@ class PlacesDB:
             (tag_folder_id, fk),
         ).fetchone()
         if existing:
-            return int(existing["id"])
+            out = int(existing["id"])
+            if return_created:
+                return out, False
+            return out
         tag_ref_id = self._insert_bookmark(
             btype=1,
             fk=fk,
@@ -448,6 +451,8 @@ class PlacesDB:
             title=(row["title"] or "").strip() or None,
         )
         self.conn.commit()
+        if return_created:
+            return tag_ref_id, True
         return tag_ref_id
 
     def dedupe_bookmark_links_by_url(self) -> int:
