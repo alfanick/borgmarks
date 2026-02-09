@@ -9,6 +9,9 @@ openai_agent_browser: false
 openai_reasoning_effort: high
 openai_folder_emoji_enrich: true
 openai_folder_emoji_max_nodes: 800
+openai_tags_enrich: true
+openai_tags_max_global: 50
+openai_tags_max_per_link: 4
 reclassify_conservative: true
 reclassify_min_folder_gain: 2
 

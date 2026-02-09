@@ -71,6 +71,7 @@ class PlacesDB:
         self.conn: sqlite3.Connection | None = None
         self._has_guid = False
         self._has_foreign_count = False
+        self._has_url_hash = False
         self.root_ids: Dict[str, int] = {}
 
     def __enter__(self) -> "PlacesDB":
@@ -88,6 +89,7 @@ class PlacesDB:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self._has_guid = self._has_column("moz_bookmarks", "guid")
         self._has_foreign_count = self._has_column("moz_places", "foreign_count")
+        self._has_url_hash = self._has_column("moz_places", "url_hash")
         self.root_ids = self._discover_root_ids()
 
     def close(self) -> None:
@@ -97,6 +99,25 @@ class PlacesDB:
 
     def get_root_folder_id(self, name: str) -> Optional[int]:
         return self.root_ids.get(name)
+
+    def get_place_url_hash(self, url: str) -> Optional[int]:
+        norm = normalize_url(url or "")
+        if not norm or not self._has_url_hash:
+            return None
+        c = self._cursor()
+        row = c.execute(
+            "SELECT url_hash FROM moz_places WHERE url = ? LIMIT 1",
+            (norm,),
+        ).fetchone()
+        if not row:
+            return None
+        value = row["url_hash"]
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except Exception:
+            return None
 
     def read_all(self, *, include_tag_links: bool = False) -> List[LinkEntry]:
         c = self._cursor()
@@ -417,6 +438,34 @@ class PlacesDB:
         )
         self.conn.commit()
         return tag_ref_id
+
+    def recompute_foreign_count(self) -> None:
+        self._assert_writable()
+        if not self._has_foreign_count:
+            return
+        c = self._cursor()
+        c.execute(
+            """
+            UPDATE moz_places
+            SET foreign_count = (
+                SELECT COUNT(*)
+                FROM moz_bookmarks b
+                WHERE b.type = 1 AND b.fk = moz_places.id
+            )
+            """
+        )
+        self.conn.commit()
+
+    def validate_integrity(self) -> None:
+        c = self._cursor()
+        row = c.execute("PRAGMA integrity_check").fetchone()
+        status = str(row[0]) if row is not None else ""
+        if status.lower() != "ok":
+            raise RuntimeError(f"sqlite integrity_check failed: {status or '<empty>'}")
+
+        fk_rows = c.execute("PRAGMA foreign_key_check").fetchall()
+        if fk_rows:
+            raise RuntimeError(f"sqlite foreign_key_check failed with {len(fk_rows)} row(s)")
 
     def _bookmark_tree_maps(self) -> tuple[Dict[int, int], Dict[int, str], Dict[int, int]]:
         c = self._cursor()

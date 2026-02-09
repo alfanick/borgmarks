@@ -21,6 +21,7 @@ from .log import LogConfig, get_logger, setup_logging
 from .parse_firefox_places import parse_firefox_places
 from .parse_netscape import parse_bookmarks_html
 from .split import enforce_leaf_limits
+from .tagging import enrich_bookmark_tags
 from .url_norm import normalize_url
 from .writer_netscape import build_tree, write_firefox_html
 
@@ -50,7 +51,7 @@ def main(argv: List[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
 
     org = sub.add_parser("organize", help="Organize an iOS/Safari bookmarks HTML export for Firefox import.")
-    org.add_argument("--ios-html", required=True, help="Input iOS/Safari bookmarks HTML export (Netscape format).")
+    org.add_argument("--ios-html", required=False, help="Optional iOS/Safari bookmarks HTML export (Netscape format).")
     org.add_argument("--firefox-profile", required=True, help="Firefox profile dir (used for input, cache, output, and optional apply).")
     org.add_argument("--out", required=False, help="Deprecated: output path is now fixed to <firefox-profile>/bookmarks.organized.html.")
     org.add_argument("--state-dir", required=False, help="Deprecated: state sidecars are written under firefox profile.")
@@ -58,6 +59,11 @@ def main(argv: List[str] | None = None) -> int:
     org.add_argument("--no-color", action="store_true", help="Disable colored logging.")
     org.add_argument("--no-fetch", action="store_true", help="Skip website fetching (faster, less accurate).")
     org.add_argument("--no-openai", action="store_true", help="Skip OpenAI classification (fallback bucketing).")
+    org.add_argument(
+        "--no-folder-emoji",
+        action="store_true",
+        help="Disable OpenAI folder emoji enrichment for this run (default: enabled).",
+    )
     org.add_argument("--skip-cache", action="store_true", help="Recreate SQLite cache and skip reading existing cache data.")
     org.add_argument(
         "--apply-firefox",
@@ -73,6 +79,8 @@ def main(argv: List[str] | None = None) -> int:
         cfg.log_level = args.log_level
     if args.no_color:
         cfg.no_color = True
+    if args.no_folder_emoji:
+        cfg.openai_folder_emoji_enrich = False
     setup_logging(LogConfig(level=cfg.log_level, no_color=cfg.no_color))
 
     if args.cmd == "organize":
@@ -82,8 +90,8 @@ def main(argv: List[str] | None = None) -> int:
 
 def _cmd_organize(args, cfg) -> int:
     t0 = time.time()
-    ios_html = Path(args.ios_html)
-    if not ios_html.exists():
+    ios_html = Path(args.ios_html) if args.ios_html else None
+    if ios_html is not None and not ios_html.exists():
         log.error("Input file not found: %s", ios_html)
         return 2
 
@@ -100,22 +108,31 @@ def _cmd_organize(args, cfg) -> int:
     state_dir = profile_dir
     state_dir.mkdir(parents=True, exist_ok=True)
     firefox_places = _resolve_places_db_path(profile_dir)
+    favicons_db = _resolve_favicons_db_path(profile_dir, firefox_places)
     cache_db = profile_dir / "borg_cache.sqlite"
     cache_db.parent.mkdir(parents=True, exist_ok=True)
     init_cache(cache_db, recreate=args.skip_cache)
 
-    begin_backup = None
     if firefox_places and firefox_places.exists():
-        begin_backup = _backup_firefox_to_tmp(firefox_places, phase="begin")
+        begin_backup = _backup_firefox_to_tmp(firefox_places, phase="begin", label="places")
         log.info("Firefox places backup (begin): %s", begin_backup)
+    if favicons_db and favicons_db.exists():
+        begin_backup = _backup_firefox_to_tmp(favicons_db, phase="begin", label="favicons")
+        log.info("Firefox favicons backup (begin): %s", begin_backup)
 
     def _finish(code: int) -> int:
         if firefox_places and firefox_places.exists():
             try:
-                end_backup = _backup_firefox_to_tmp(firefox_places, phase="end")
+                end_backup = _backup_firefox_to_tmp(firefox_places, phase="end", label="places")
                 log.info("Firefox places backup (end): %s", end_backup)
             except Exception as e:
                 log.warning("Firefox places end-backup failed: %s", e)
+        if favicons_db and favicons_db.exists():
+            try:
+                end_backup = _backup_firefox_to_tmp(favicons_db, phase="end", label="favicons")
+                log.info("Firefox favicons backup (end): %s", end_backup)
+            except Exception as e:
+                log.warning("Firefox favicons end-backup failed: %s", e)
         if code == 0:
             log.info("Done in %d ms.", int((time.time() - t0) * 1000))
         return code
@@ -123,12 +140,16 @@ def _cmd_organize(args, cfg) -> int:
     if args.backup_firefox:
         _backup_firefox_profile(profile_dir, state_dir)
 
-    try:
-        ios_bookmarks, _root_title = parse_bookmarks_html(ios_html)
-    except Exception as e:
-        log.error("Failed to parse bookmarks HTML: %s", e)
-        return _finish(2)
-    log.info("Parsed %d bookmarks from iOS export: %s", len(ios_bookmarks), ios_html)
+    ios_bookmarks = []
+    if ios_html is not None:
+        try:
+            ios_bookmarks, _root_title = parse_bookmarks_html(ios_html)
+        except Exception as e:
+            log.error("Failed to parse bookmarks HTML: %s", e)
+            return _finish(2)
+        log.info("Parsed %d bookmarks from iOS export: %s", len(ios_bookmarks), ios_html)
+    else:
+        log.info("No --ios-html provided; running with Firefox bookmarks only.")
 
     firefox_bookmarks = []
     if firefox_places:
@@ -150,20 +171,20 @@ def _cmd_organize(args, cfg) -> int:
     # Normalize + derive domain/lang + dedupe
     seen = set()
     deduped = []
-    dupes = 0
+    exact_dupes = 0
     for b in bookmarks:
         b.url = normalize_url(b.url)
         b.domain = domain_of(b.url)
         b.lang = guess_lang(b.url, b.title)
 
         if b.url in seen and not cfg.keep_duplicates:
-            dupes += 1
+            exact_dupes += 1
             continue
         seen.add(b.url)
         deduped.append(b)
     bookmarks = deduped
-    if dupes:
-        log.info("Deduped %d duplicates (set BORG_KEEP_DUPLICATES=1 to keep).", dupes)
+    if exact_dupes:
+        log.info("Deduped %d duplicates (set BORG_KEEP_DUPLICATES=1 to keep).", exact_dupes)
 
     # Cache prefill (unless explicitly skipped)
     if not args.skip_cache:
@@ -228,6 +249,7 @@ def _cmd_organize(args, cfg) -> int:
             b.lang = guess_lang(b.url, b.title)
 
     # Near-duplicate cleanup (after redirects are known).
+    near_dupes = 0
     if not cfg.keep_duplicates:
         before = len(bookmarks)
         bookmarks = _dedupe_near_duplicates(bookmarks)
@@ -279,9 +301,21 @@ def _cmd_organize(args, cfg) -> int:
 
     # Leaf folder cap
     enforce_leaf_limits(bookmarks, leaf_max_links=cfg.leaf_max_links, max_depth=cfg.max_depth)
-    if not args.no_openai and cfg.openai_folder_emoji_enrich and newly_assigned_ids:
-        enrich_folder_emojis(bookmarks, cfg, target_ids=newly_assigned_ids)
+    if not args.no_openai and cfg.openai_folder_emoji_enrich:
+        # Apply missing folder emojis across the whole tree (existing + new),
+        # but never replace already present emoji prefixes.
+        enrich_folder_emojis(bookmarks, cfg)
         _normalize_category_paths(bookmarks)
+    if args.no_openai:
+        # Keep tags normalized/capped even without OpenAI calls.
+        prev = cfg.openai_tags_enrich
+        cfg.openai_tags_enrich = False
+        try:
+            enrich_bookmark_tags(bookmarks, cfg)
+        finally:
+            cfg.openai_tags_enrich = prev
+    elif cfg.openai_tags_enrich:
+        enrich_bookmark_tags(bookmarks, cfg)
 
     # Sidecar metadata
     if cfg.write_sidecar_jsonl:
@@ -324,13 +358,14 @@ def _cmd_organize(args, cfg) -> int:
 
     if args.apply_firefox:
         try:
-            sync = apply_bookmarks_to_firefox(firefox_places, bookmarks)
+            sync = apply_bookmarks_to_firefox(firefox_places, bookmarks, favicons_db_path=favicons_db)
             log.info(
-                "Applied to Firefox DB: touched=%d added=%d moved=%d tagged=%d",
+                "Applied to Firefox DB: touched=%d added=%d moved=%d tagged=%d icons=%d",
                 sync.touched_links,
                 sync.added_links,
                 sync.moved_links,
                 sync.tagged_links,
+                sync.icon_links,
             )
         except Exception as e:
             log.error("Failed to apply to Firefox places.sqlite: %s", e)
@@ -338,6 +373,8 @@ def _cmd_organize(args, cfg) -> int:
 
     # Store current bookmark state in cache (including categories/tags and summaries).
     upsert_entries(cache_db, [_cache_entry_from_bookmark(b) for b in bookmarks])
+
+    _log_run_stats(bookmarks, exact_dupes=exact_dupes, near_dupes=near_dupes)
 
     # End-of-run guard: the pipeline must preserve unique links, except non-200.
     if not _sanity_check_unique_link_counts(sanity_input, bookmarks):
@@ -367,13 +404,20 @@ def _resolve_places_db_path(profile_or_db: Path) -> Path:
     return db
 
 
-def _backup_firefox_to_tmp(places_db: Path, *, phase: str) -> Path:
+def _backup_firefox_to_tmp(places_db: Path, *, phase: str, label: str) -> Path:
     tmp_dir = Path("/tmp")
     tmp_dir.mkdir(parents=True, exist_ok=True)
     ts = int(time.time())
-    dst = tmp_dir / f"borgmarks-places-{phase}-{ts}.sqlite"
+    dst = tmp_dir / f"borgmarks-{label}-{phase}-{ts}.sqlite"
     dst.write_bytes(places_db.read_bytes())
     return dst
+
+
+def _resolve_favicons_db_path(profile_or_db: Path, places_db: Path) -> Path:
+    p = Path(profile_or_db)
+    if p.is_dir():
+        return p / "favicons.sqlite"
+    return places_db.parent / "favicons.sqlite"
 
 
 def _fallback_assign(bookmarks) -> set[str]:
@@ -569,6 +613,38 @@ def _is_strictly_inaccessible(status_code: int | None) -> bool:
     if status_code is None:
         return False
     return status_code in {401, 403, 404, 410, 451}
+
+
+def _is_broken_for_stats(status_code: int | None) -> bool:
+    if status_code is None:
+        return False
+    return status_code in {403, 404} or (500 <= status_code <= 599)
+
+
+def _folder_count(bookmarks: Iterable) -> int:
+    folders = set()
+    for b in bookmarks:
+        path = [str(x).strip() for x in (b.assigned_path or []) if str(x).strip()]
+        if not path:
+            continue
+        prefix = []
+        for comp in path:
+            prefix.append(comp)
+            folders.add(tuple(prefix))
+    return len(folders)
+
+
+def _log_run_stats(bookmarks: Iterable, *, exact_dupes: int, near_dupes: int) -> None:
+    rows = list(bookmarks)
+    broken = sum(1 for b in rows if _is_broken_for_stats(getattr(b, "http_status", None)))
+    total_dupes = max(0, int(exact_dupes)) + max(0, int(near_dupes))
+    log.info(
+        "Stats: URLs=%d Folders=%d Broken URLs=%d Duplicates=%d",
+        len(rows),
+        _folder_count(rows),
+        broken,
+        total_dupes,
+    )
 
 
 def _apply_cache_entry(b, c: CacheEntry) -> None:

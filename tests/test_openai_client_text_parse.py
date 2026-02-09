@@ -1,4 +1,8 @@
-from borgmarks.openai_client import _extract_output_text, _parse_assignment_batch_from_text
+from borgmarks.openai_client import (
+    _extract_output_text,
+    _parse_assignment_batch_from_text,
+    _parse_tag_batch_from_text,
+)
 
 
 def test_parse_assignment_batch_from_plain_json():
@@ -33,3 +37,10 @@ def test_extract_output_text_from_response_json_output_list():
     }
     text = _extract_output_text(payload)
     assert '"id":"b3"' in text
+
+
+def test_parse_tag_batch_from_plain_json():
+    raw = '{"tag_catalog":["news","machine_learning"],"assignments":[{"id":"b1","tags":["news"]}]}'
+    parsed = _parse_tag_batch_from_text(raw)
+    assert parsed.tag_catalog == ["news", "machine_learning"]
+    assert parsed.assignments[0].id == "b1"

@@ -1,4 +1,4 @@
-# borgmarks 0.5.0
+# borgmarks 0.6.0
 
 Organize bookmarks from iOS/iPadOS Safari + Firefox with OpenAI, then either:
 - generate an importable Firefox HTML file (safe mode), or
@@ -39,16 +39,38 @@ podman machine start
 
 ```bash
 podman login registry.nakarmamana.ch
-podman pull registry.nakarmamana.ch/alfanick/bookmarks-sync:0.5.0
+podman pull registry.nakarmamana.ch/alfanick/bookmarks-sync:0.6.0
 ```
 
 ### 3. Prepare inputs
 
-- Export Safari bookmarks from iOS/iPadOS to `Bookmarks.html`.
 - Find Firefox profile path (directory containing `places.sqlite`).
 - Close Firefox before running.
+- Optional iOS export (`Bookmarks.html`) with explicit steps:
+  1. On iPhone/iPad open Safari and open the bookmark you want synced.
+  2. Share it to Files (or copy links to Notes), then on Mac import them into Safari bookmarks.
+  3. On Mac Safari: `File -> Export -> Bookmarks...` and save as `Bookmarks.html`.
+  4. Put `Bookmarks.html` in your current working directory.
 
 ### 4. Run (safe mode: does **not** edit `places.sqlite`)
+
+Firefox-only mode (no iOS file, useful for reclassifying new Firefox links):
+
+```bash
+export OPENAI_API_KEY="sk-..."
+mkdir -p tmp
+
+podman run --rm -it \
+  -e OPENAI_API_KEY \
+  -e BORG_OPENAI_JOBS=4 \
+  -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
+  -v "$PWD/tmp:/tmp:Z" \
+  registry.nakarmamana.ch/alfanick/bookmarks-sync:0.6.0 organize \
+    --firefox-profile /firefox \
+    --skip-cache
+```
+
+Merged mode (Firefox + iOS input with equal priority):
 
 ```bash
 export OPENAI_API_KEY="sk-..."
@@ -60,7 +82,7 @@ podman run --rm -it \
   -v "$PWD/Bookmarks.html:/in/Bookmarks.html:Z" \
   -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
   -v "$PWD/tmp:/tmp:Z" \
-  registry.nakarmamana.ch/alfanick/bookmarks-sync:0.5.0 organize \
+  registry.nakarmamana.ch/alfanick/bookmarks-sync:0.6.0 organize \
     --ios-html /in/Bookmarks.html \
     --firefox-profile /firefox \
     --skip-cache
@@ -82,7 +104,7 @@ podman run --rm -it \
   -v "$PWD/Bookmarks.html:/in/Bookmarks.html:Z" \
   -v "$HOME/.mozilla/firefox/abcd.default-release:/firefox:Z" \
   -v "$PWD/tmp:/tmp:Z" \
-  registry.nakarmamana.ch/alfanick/bookmarks-sync:0.5.0 organize \
+  registry.nakarmamana.ch/alfanick/bookmarks-sync:0.6.0 organize \
     --ios-html /in/Bookmarks.html \
     --firefox-profile /firefox \
     --skip-cache \
@@ -95,10 +117,12 @@ podman run --rm -it \
 
 ## What It Does
 
-- Merges iOS Safari export + Firefox bookmarks as input.
+- Uses Firefox bookmarks as baseline input.
+- Optionally merges iOS Safari export with equal priority.
 - Deduplicates URLs (exact + near duplicates).
 - Follows redirects and preserves link parity (excluding non-200 for sanity check).
 - Classifies into folders + tags with OpenAI (conservative reclassification).
+- Runs a dedicated tag pass over the whole tree (1-4 tags/link, max 50 global tags).
 - Adds/keeps folder emojis and bookmark icons:
   - favicon when available
   - emoji icon fallback when favicon is missing
@@ -117,6 +141,7 @@ podman run --rm -it \
 - `--skip-cache`: rebuild cache from scratch.
 - `--no-fetch`: skip website fetch.
 - `--no-openai`: skip OpenAI classification.
+- `--no-folder-emoji`: skip folder emoji enrichment for this run.
 - `--apply-firefox`: write to `places.sqlite` bookmarks/tags/folders.
 - `--backup-firefox`: extra profile backup in profile directory.
 - `--log-level DEBUG`: verbose logs.

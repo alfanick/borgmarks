@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple
 
+from .favicons_db import FaviconsDB
 from .model import Bookmark
 from .places_db import PlacesDB
 from .url_norm import normalize_url
@@ -27,11 +29,24 @@ class SyncStats:
     moved_links: int = 0
     tagged_links: int = 0
     touched_links: int = 0
+    icon_links: int = 0
 
 
-def apply_bookmarks_to_firefox(places_db_path: Path, bookmarks: Iterable[Bookmark]) -> SyncStats:
+def apply_bookmarks_to_firefox(
+    places_db_path: Path,
+    bookmarks: Iterable[Bookmark],
+    *,
+    favicons_db_path: Optional[Path] = None,
+) -> SyncStats:
     stats = SyncStats()
-    with PlacesDB(places_db_path, readonly=False) as db:
+    with ExitStack() as stack:
+        db = stack.enter_context(PlacesDB(places_db_path, readonly=False))
+        favicon_db = None
+        if favicons_db_path and favicons_db_path.exists():
+            candidate = stack.enter_context(FaviconsDB(favicons_db_path))
+            if candidate.supports_schema():
+                favicon_db = candidate
+
         existing = db.read_all(include_tag_links=False)
         existing_by_url: Dict[str, int] = {}
         existing_parent_by_url: Dict[str, int] = {}
@@ -70,7 +85,17 @@ def apply_bookmarks_to_firefox(places_db_path: Path, bookmarks: Iterable[Bookmar
                     after = len(db.read_tag(tag))
                     if after > before:
                         stats.tagged_links += 1
+            icon_uri = (b.meta.get("icon_uri") or "").strip()
+            if favicon_db is not None and icon_uri:
+                page_hash = db.get_place_url_hash(url)
+                if favicon_db.set_page_icon(page_url=url, icon_url=icon_uri, page_url_hash=page_hash):
+                    stats.icon_links += 1
             stats.touched_links += 1
+        # Keep references consistent and fail fast if DB is not coherent.
+        db.recompute_foreign_count()
+        db.validate_integrity()
+        if favicon_db is not None:
+            favicon_db.validate_integrity()
     return stats
 
 

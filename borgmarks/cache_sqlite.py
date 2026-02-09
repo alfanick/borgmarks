@@ -7,6 +7,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
+CURRENT_CACHE_SCHEMA_VERSION = 2
+
+_CACHE_OPTIONAL_COLUMNS: dict[str, str] = {
+    "final_url": "TEXT",
+    "title": "TEXT",
+    "tags_json": "TEXT NOT NULL DEFAULT '[]'",
+    "categories_json": "TEXT NOT NULL DEFAULT '[]'",
+    "status_code": "INTEGER",
+    "visited_at": "TEXT",
+    "summary": "TEXT",
+    "html": "TEXT",
+    "page_title": "TEXT",
+    "page_description": "TEXT",
+    "content_snippet": "TEXT",
+    "icon_url": "TEXT",
+    "updated_at": "TEXT NOT NULL DEFAULT ''",
+}
+
 
 @dataclass
 class CacheEntry:
@@ -32,30 +50,9 @@ def init_cache(db_path: Path, *, recreate: bool = False) -> None:
         db_path.unlink()
 
     with sqlite3.connect(db_path) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS bookmark_cache (
-                cache_key TEXT PRIMARY KEY,
-                url TEXT NOT NULL,
-                final_url TEXT,
-                title TEXT,
-                tags_json TEXT NOT NULL DEFAULT '[]',
-                categories_json TEXT NOT NULL DEFAULT '[]',
-                status_code INTEGER,
-                visited_at TEXT,
-                summary TEXT,
-                html TEXT,
-                page_title TEXT,
-                page_description TEXT,
-                content_snippet TEXT,
-                icon_url TEXT,
-                updated_at TEXT NOT NULL
-            )
-            """
-        )
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(bookmark_cache)")}
-        if "icon_url" not in cols:
-            conn.execute("ALTER TABLE bookmark_cache ADD COLUMN icon_url TEXT")
+        _create_base_schema(conn)
+        _migrate_schema(conn)
+        _ensure_unique_cache_key(conn)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_bookmark_cache_url ON bookmark_cache(url)")
 
 
@@ -156,3 +153,53 @@ def _safe_json_array(value: Optional[str]) -> List[str]:
         return []
     except Exception:
         return []
+
+
+def _create_base_schema(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS bookmark_cache (
+            cache_key TEXT PRIMARY KEY,
+            url TEXT NOT NULL,
+            final_url TEXT,
+            title TEXT,
+            tags_json TEXT NOT NULL DEFAULT '[]',
+            categories_json TEXT NOT NULL DEFAULT '[]',
+            status_code INTEGER,
+            visited_at TEXT,
+            summary TEXT,
+            html TEXT,
+            page_title TEXT,
+            page_description TEXT,
+            content_snippet TEXT,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _migrate_schema(conn: sqlite3.Connection) -> None:
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(bookmark_cache)")}
+
+    for name, ddl in _CACHE_OPTIONAL_COLUMNS.items():
+        if name not in cols:
+            conn.execute(f"ALTER TABLE bookmark_cache ADD COLUMN {name} {ddl}")
+
+    current = int(conn.execute("PRAGMA user_version").fetchone()[0] or 0)
+    if current != CURRENT_CACHE_SCHEMA_VERSION:
+        conn.execute(f"PRAGMA user_version = {CURRENT_CACHE_SCHEMA_VERSION}")
+
+
+def _ensure_unique_cache_key(conn: sqlite3.Connection) -> None:
+    # Legacy DBs may not have PK/UNIQUE on cache_key. Upsert requires it.
+    conn.execute(
+        """
+        DELETE FROM bookmark_cache
+        WHERE rowid NOT IN (
+            SELECT MAX(rowid) FROM bookmark_cache GROUP BY cache_key
+        )
+        """
+    )
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_bookmark_cache_cache_key ON bookmark_cache(cache_key)"
+    )

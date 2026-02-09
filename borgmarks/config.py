@@ -36,13 +36,16 @@ class Settings:
     openai_model: str = "gpt-5.2"
     openai_timeout_s: int = 900
     openai_jobs: int = 2
-    openai_max_bookmarks: int = 0  # v0.5.0 default: classify all (set >0 to cap)
+    openai_max_bookmarks: int = 0  # v0.6.0 default: classify all (set >0 to cap)
     openai_reclassify: bool = True
     openai_max_output_tokens: int = 100_000_000
     openai_agent_browser: bool = False
     openai_reasoning_effort: str = "high"
     openai_folder_emoji_enrich: bool = True
     openai_folder_emoji_max_nodes: int = 800
+    openai_tags_enrich: bool = True
+    openai_tags_max_global: int = 50
+    openai_tags_max_per_link: int = 4
     reclassify_conservative: bool = True
     reclassify_min_folder_gain: int = 2
 
@@ -51,7 +54,7 @@ class Settings:
     fetch_timeout_s: int = 15
     fetch_jobs: int = 16
     fetch_max_urls: int = 400
-    fetch_user_agent: str = "borgmarks/0.5.0 (+https://example.invalid)"
+    fetch_user_agent: str = "borgmarks/0.6.0 (+https://example.invalid)"
     fetch_max_bytes: int = 350_000
 
     # Organization rules
@@ -85,6 +88,9 @@ class Settings:
         s.openai_reasoning_effort = _env_str("BORG_OPENAI_REASONING_EFFORT", s.openai_reasoning_effort)
         s.openai_folder_emoji_enrich = _env_bool("BORG_OPENAI_FOLDER_EMOJI_ENRICH", s.openai_folder_emoji_enrich)
         s.openai_folder_emoji_max_nodes = _env_int("BORG_OPENAI_FOLDER_EMOJI_MAX_NODES", s.openai_folder_emoji_max_nodes)
+        s.openai_tags_enrich = _env_bool("BORG_OPENAI_TAGS_ENRICH", s.openai_tags_enrich)
+        s.openai_tags_max_global = _env_int("BORG_OPENAI_TAGS_MAX_GLOBAL", s.openai_tags_max_global)
+        s.openai_tags_max_per_link = _env_int("BORG_OPENAI_TAGS_MAX_PER_LINK", s.openai_tags_max_per_link)
         s.reclassify_conservative = _env_bool("BORG_RECLASSIFY_CONSERVATIVE", s.reclassify_conservative)
         s.reclassify_min_folder_gain = _env_int("BORG_RECLASSIFY_MIN_FOLDER_GAIN", s.reclassify_min_folder_gain)
 

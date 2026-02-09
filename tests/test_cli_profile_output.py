@@ -88,3 +88,21 @@ def test_cli_writes_output_to_firefox_profile_and_ignores_out(tmp_path: Path):
     assert (profile / "bookmarks.organized.html").exists()
     assert (profile / "bookmarks.organized.meta.jsonl").exists()
     assert not ignored_out.exists()
+
+
+def test_cli_supports_firefox_only_mode_without_ios_html(tmp_path: Path):
+    profile = tmp_path / "profile"
+    _mk_profile(profile)
+
+    rc = main(
+        [
+            "organize",
+            "--firefox-profile",
+            str(profile),
+            "--no-openai",
+            "--no-fetch",
+            "--skip-cache",
+        ]
+    )
+    assert rc == 0
+    assert (profile / "bookmarks.organized.html").exists()

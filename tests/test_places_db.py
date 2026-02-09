@@ -190,3 +190,17 @@ def test_root_guid_fallback_without_roots_table(tmp_path: Path):
     with PlacesDB(db_path, readonly=True) as db:
         assert db.get_root_folder_id("toolbar") == 3
         assert db.get_root_folder_id("menu") == 2
+
+
+def test_recompute_foreign_count_and_integrity_check(tmp_path: Path):
+    db_path = tmp_path / "places.sqlite"
+    _mk_places_db(db_path)
+    with PlacesDB(db_path, readonly=False) as db:
+        # Corrupt a counter on purpose, then recompute.
+        db.conn.execute("UPDATE moz_places SET foreign_count = 999 WHERE id = 100")
+        db.conn.commit()
+        db.recompute_foreign_count()
+        row = db.conn.execute("SELECT foreign_count FROM moz_places WHERE id = 100").fetchone()
+        # place 100 has 2 references in fixture: one normal link + one tag link
+        assert int(row[0]) == 2
+        db.validate_integrity()
