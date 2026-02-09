@@ -44,31 +44,68 @@ def enrich_folder_emojis(
             "Folder emoji enrichment capped to first %d nodes (BORG_OPENAI_FOLDER_EMOJI_MAX_NODES).",
             len(nodes),
         )
-
-    payload = {"folders": [{"path": list(path), "count": count} for path, count in nodes]}
-    try:
-        res = suggest_folder_emojis(
-            model=cfg.openai_model,
-            timeout_s=cfg.openai_timeout_s,
-            max_output_tokens=cfg.openai_max_output_tokens,
-            system_prompt=SYSTEM_PROMPT_FOLDER_EMOJI,
-            user_payload=json.dumps(payload, ensure_ascii=False),
-            batch_label=f"nodes-{len(nodes)}",
-            use_browser_tool=cfg.openai_agent_browser,
-            reasoning_effort=cfg.openai_reasoning_effort,
-        )
-    except Exception as e:
-        log.warning("OpenAI folder emoji enrichment failed: %s", e)
+    batches = _build_emoji_batches(nodes)
+    if not batches:
         return
+    log.info(
+        "OpenAI folder-emoji batching: nodes=%d batches=%d (recursive parent+children).",
+        len(nodes),
+        len(batches),
+    )
 
     mapping: Dict[Tuple[str, ...], str] = {}
-    for s in res.parsed.suggestions:
-        key = tuple(_base_component(x) for x in (s.path or []) if str(x).strip())
-        if not key:
+    errors = 0
+    max_tokens = min(max(256, int(cfg.openai_max_output_tokens)), 4096)
+    for idx, batch_paths in enumerate(batches, start=1):
+        label_path = "/".join(batch_paths[0]) if batch_paths and batch_paths[0] else "<root>"
+        payload = {
+            "folders": [
+                {
+                    "path": list(path),
+                    "count": _node_count(nodes, path),
+                }
+                for path in batch_paths
+            ]
+        }
+        log.info(
+            "OpenAI folder-emoji batch %d/%d: path=%s nodes=%d",
+            idx,
+            len(batches),
+            label_path,
+            len(batch_paths),
+        )
+        try:
+            res = suggest_folder_emojis(
+                model=cfg.openai_model,
+                timeout_s=cfg.openai_timeout_s,
+                max_output_tokens=max_tokens,
+                system_prompt=SYSTEM_PROMPT_FOLDER_EMOJI,
+                user_payload=json.dumps(payload, ensure_ascii=False),
+                batch_label=f"batch-{idx}/{len(batches)}",
+                use_browser_tool=cfg.openai_agent_browser,
+                reasoning_effort=cfg.openai_reasoning_effort,
+            )
+        except Exception as e:
+            errors += 1
+            log.warning(
+                "OpenAI folder emoji batch failed (%d/%d path=%s): %s",
+                idx,
+                len(batches),
+                label_path,
+                e,
+            )
             continue
-        emoji = _sanitize_emoji(s.emoji or "")
-        if emoji:
-            mapping[key] = emoji
+
+        allowed = set(batch_paths)
+        for s in res.parsed.suggestions:
+            key = tuple(_base_component(x) for x in (s.path or []) if str(x).strip())
+            if not key or key not in allowed:
+                continue
+            emoji = _sanitize_emoji(s.emoji or "")
+            if emoji and key not in mapping:
+                mapping[key] = emoji
+    if errors:
+        log.warning("Folder emoji enrichment had %d batch errors.", errors)
     if not mapping:
         return
     changed = _apply_emoji_mapping(bookmarks, mapping, target_ids=target_ids)
@@ -87,6 +124,42 @@ def _folder_nodes(bookmarks: Iterable[Bookmark]) -> List[Tuple[Tuple[str, ...], 
     rows = list(counts.items())
     rows.sort(key=lambda x: (-x[1], "/".join(x[0]).lower()))
     return rows
+
+
+def _build_emoji_batches(nodes: Sequence[Tuple[Tuple[str, ...], int]]) -> List[List[Tuple[str, ...]]]:
+    count_by_path: Dict[Tuple[str, ...], int] = {path: int(count) for path, count in nodes}
+    if not count_by_path:
+        return []
+    children: Dict[Tuple[str, ...], List[Tuple[str, ...]]] = {}
+    for path in count_by_path:
+        parent = path[:-1]
+        children.setdefault(parent, []).append(path)
+    for parent in list(children.keys()):
+        children[parent].sort(
+            key=lambda p: (
+                -count_by_path.get(p, 0),
+                "/".join(p).lower(),
+            )
+        )
+
+    out: List[List[Tuple[str, ...]]] = []
+
+    def _visit(path: Tuple[str, ...]) -> None:
+        direct = children.get(path, [])
+        out.append([path] + list(direct))
+        for ch in direct:
+            _visit(ch)
+
+    for root in children.get(tuple(), []):
+        _visit(root)
+    return out
+
+
+def _node_count(nodes: Sequence[Tuple[Tuple[str, ...], int]], path: Tuple[str, ...]) -> int:
+    for p, c in nodes:
+        if p == path:
+            return int(c)
+    return 0
 
 
 def _apply_emoji_mapping(
