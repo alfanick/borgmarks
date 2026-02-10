@@ -81,3 +81,19 @@ def test_enrich_folder_emojis_runs_in_batches(monkeypatch):
     assert len(calls) >= 2
     assert b1.assigned_path[0].startswith("💻 ")
     assert b1.assigned_path[1].startswith("🧑 ")
+
+
+def test_enrich_folder_emojis_skips_when_scope_has_no_missing_prefix(monkeypatch):
+    called = {"n": 0}
+
+    def _fake_suggest_folder_emojis(**kwargs):
+        called["n"] += 1
+        return SimpleNamespace(parsed=SimpleNamespace(suggestions=[]), ms=5)
+
+    monkeypatch.setattr("borgmarks.folder_emoji.suggest_folder_emojis", _fake_suggest_folder_emojis)
+
+    cfg = Settings()
+    b = Bookmark(id="b1", title="a", url="https://a")
+    b.assigned_path = ["💻 Computers", "🧑 Dev"]
+    enrich_folder_emojis([b], cfg, target_ids={"b1"})
+    assert called["n"] == 0

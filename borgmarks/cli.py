@@ -346,14 +346,17 @@ def _cmd_organize(args, cfg) -> int:
     if openai_enabled and cfg.openai_folder_emoji_enrich:
         # Apply missing folder emojis across the whole tree (existing + new),
         # but never replace already present emoji prefixes.
-        try:
-            enrich_folder_emojis(bookmarks, cfg)
-            _normalize_category_paths(bookmarks)
-        except Exception as e:
-            log.warning(
-                "Folder emoji enrichment failed after links were applied; keeping existing links unchanged: %s",
-                e,
-            )
+        if newly_assigned_ids:
+            try:
+                enrich_folder_emojis(bookmarks, cfg, target_ids=newly_assigned_ids)
+                _normalize_category_paths(bookmarks)
+            except Exception as e:
+                log.warning(
+                    "Folder emoji enrichment failed after links were applied; keeping existing links unchanged: %s",
+                    e,
+                )
+        else:
+            log.info("Skipping folder emoji enrichment: no newly classified links in this run.")
 
     _log_link_progress(bookmarks, phase="organize")
 

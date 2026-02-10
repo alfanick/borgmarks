@@ -241,6 +241,66 @@ def test_cli_skips_openai_when_cache_has_summary_and_categories(tmp_path: Path, 
     assert called == {"classify": 0, "folder_emoji": 0, "tag_openai": 0}
 
 
+def test_cli_skips_folder_emoji_when_no_newly_classified_links(tmp_path: Path, monkeypatch):
+    profile = tmp_path / "profile"
+    _mk_profile(profile)
+    cache_db = profile / "borg_cache.sqlite"
+    init_cache(cache_db, recreate=True)
+    urls = [
+        "https://github.com/",
+        "https://onet.pl/",
+        "https://en.wikipedia.org/wiki/Fujifilm",
+    ]
+    rows = [
+        CacheEntry(
+            cache_key=_url_identity(url),
+            url=url,
+            final_url=url,
+            title=None,
+            tags=["cached"],
+            categories=["💻 Computers", "Dev"],
+            status_code=200,
+            visited_at="2026-02-09T00:00:00+00:00",
+            # one missing summary keeps openai_enabled=True
+            summary=None if i == 0 else "cached summary",
+            html=None,
+            page_title=None,
+            page_description=None,
+            content_snippet=None,
+            icon_url=None,
+        )
+        for i, url in enumerate(urls)
+    ]
+    upsert_entries(cache_db, rows)
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.delenv("OPENAI_KEY", raising=False)
+    monkeypatch.setattr("borgmarks.cli.classify_bookmarks", lambda *_a, **_kw: set())
+    monkeypatch.setattr("borgmarks.cli.enrich_bookmark_tags", lambda *_a, **_kw: None)
+
+    called = {"emoji": 0}
+
+    def _emoji_guard(*_a, **_kw):
+        called["emoji"] += 1
+        raise AssertionError("enrich_folder_emojis should be skipped when no newly assigned ids")
+
+    monkeypatch.setattr("borgmarks.cli.enrich_folder_emojis", _emoji_guard)
+
+    ios = Path(__file__).parent / "fixtures" / "sample_bookmarks.html"
+    rc = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios),
+            "--firefox-profile",
+            str(profile),
+            "--no-fetch",
+        ]
+    )
+    assert rc == 0
+    assert called["emoji"] == 0
+
+
 def test_cli_removed_input_link_is_not_restored_from_cache(tmp_path: Path):
     profile = tmp_path / "profile"
     _mk_profile(profile)

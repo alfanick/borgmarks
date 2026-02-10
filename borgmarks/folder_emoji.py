@@ -35,7 +35,15 @@ def enrich_folder_emojis(
 ) -> None:
     if not bookmarks:
         return
-    nodes = _folder_nodes(bookmarks)
+    scoped = [b for b in bookmarks if (target_ids is None or b.id in target_ids)]
+    if not scoped:
+        log.info("Skipping folder emoji enrichment: scope is empty.")
+        return
+    if not _scope_needs_emoji(scoped):
+        log.info("Skipping folder emoji enrichment: scope has no folders missing emoji prefixes.")
+        return
+
+    nodes = _folder_nodes(scoped)
     if not nodes:
         return
     if cfg.openai_folder_emoji_max_nodes > 0 and len(nodes) > cfg.openai_folder_emoji_max_nodes:
@@ -222,3 +230,11 @@ def _sanitize_emoji(v: str) -> str:
         if len(out) >= 2:
             break
     return "".join(out).strip()
+
+
+def _scope_needs_emoji(bookmarks: Iterable[Bookmark]) -> bool:
+    for b in bookmarks:
+        for comp in (b.assigned_path or []):
+            if not _has_leading_emoji(comp):
+                return True
+    return False
