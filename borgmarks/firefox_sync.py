@@ -33,6 +33,8 @@ class SyncStats:
     removed_links: int = 0
     moved_links: int = 0
     tagged_links: int = 0
+    removed_tag_refs: int = 0
+    removed_folders: int = 0
     touched_links: int = 0
     icon_links: int = 0
     icon_errors: int = 0
@@ -89,7 +91,7 @@ def apply_bookmarks_to_firefox(
 
                 existing_link_id = existing_by_url.get(url)
                 if existing_link_id is None:
-                    link_id = db.add_link(target_parent_id, url, title, tags=tags)
+                    link_id = db.add_link(target_parent_id, url, title, tags=[])
                     existing_by_url[url] = link_id
                     existing_parent_by_url[url] = target_parent_id
                     stats.added_links += 1
@@ -100,10 +102,9 @@ def apply_bookmarks_to_firefox(
                         stats.moved_links += 1
                     # Ensure title and tags converge in-place, idempotently.
                     link_id = db.add_link(target_parent_id, url, title, tags=[])
-                    for tag in tags:
-                        _tag_ref_id, created = db.add_link_tag(link_id, tag, return_created=True)
-                        if created:
-                            stats.tagged_links += 1
+                added_tags, removed_tags = db.sync_link_tags(link_id, tags)
+                stats.tagged_links += added_tags
+                stats.removed_tag_refs += removed_tags
                 stats.touched_links += 1
 
             desired_urls = {normalize_url(b.final_url or b.url) for b in rows if normalize_url(b.final_url or b.url)}
@@ -114,6 +115,11 @@ def apply_bookmarks_to_firefox(
                     log.info("Pruned %d stale Firefox bookmark links not present in current run set.", pruned)
             else:
                 log.warning("Skipping Firefox stale-link prune: desired URL set is empty.")
+
+            removed_folders = db.prune_empty_folders()
+            if removed_folders:
+                stats.removed_folders += removed_folders
+                log.info("Pruned %d empty Firefox folders.", removed_folders)
 
             if apply_icons and favicon_db is not None:
                 icon_rows = [b for b in rows if normalize_url(b.final_url or b.url) and (b.meta.get("icon_uri") or "").strip()]

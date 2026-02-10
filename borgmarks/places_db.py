@@ -459,6 +459,93 @@ class PlacesDB:
             return tag_ref_id, True
         return tag_ref_id
 
+    def sync_link_tags(self, link_id: int, desired_tags: Iterable[str]) -> tuple[int, int]:
+        """Synchronize tag refs for a link to exactly desired_tags.
+
+        Returns (added_refs, removed_refs).
+        """
+        self._assert_writable()
+        self._require_link(link_id)
+        tags_root = self.root_ids.get("tags")
+        if tags_root is None:
+            return (0, 0)
+
+        desired = {str(t).strip().lower() for t in desired_tags if str(t).strip()}
+        c = self._cursor()
+        row = c.execute("SELECT fk FROM moz_bookmarks WHERE id = ?", (link_id,)).fetchone()
+        fk = int(row["fk"] or 0) if row else 0
+        if fk <= 0:
+            return (0, 0)
+
+        existing_rows = c.execute(
+            """
+            SELECT b.id AS ref_id, LOWER(TRIM(tf.title)) AS tag_name
+            FROM moz_bookmarks b
+            JOIN moz_bookmarks tf ON tf.id = b.parent
+            WHERE b.type = 1
+              AND b.fk = ?
+              AND tf.type = 2
+              AND tf.parent = ?
+            """,
+            (fk, tags_root),
+        ).fetchall()
+        existing = {str(r["tag_name"] or "").strip() for r in existing_rows if str(r["tag_name"] or "").strip()}
+
+        removed = 0
+        for r in existing_rows:
+            tag_name = str(r["tag_name"] or "").strip()
+            if not tag_name:
+                continue
+            if tag_name in desired:
+                continue
+            c.execute("DELETE FROM moz_bookmarks WHERE id = ?", (int(r["ref_id"]),))
+            removed += 1
+
+        added = 0
+        for tag in sorted(desired - existing):
+            _ref_id, created = self.add_link_tag(link_id, tag, return_created=True)
+            if created:
+                added += 1
+
+        if removed:
+            self.conn.commit()
+        return (added, removed)
+
+    def prune_empty_folders(self) -> int:
+        """Remove empty non-root folders recursively."""
+        self._assert_writable()
+        root_ids = {int(x) for x in self.root_ids.values()}
+        c = self._cursor()
+        removed = 0
+
+        while True:
+            rows = c.execute(
+                """
+                SELECT id
+                FROM moz_bookmarks
+                WHERE type = 2
+                ORDER BY id
+                """
+            ).fetchall()
+            removed_pass = 0
+            for r in rows:
+                fid = int(r["id"])
+                if fid in root_ids:
+                    continue
+                child_count = int(
+                    c.execute("SELECT COUNT(*) FROM moz_bookmarks WHERE parent = ?", (fid,)).fetchone()[0]
+                )
+                if child_count != 0:
+                    continue
+                c.execute("DELETE FROM moz_bookmarks WHERE id = ?", (fid,))
+                removed_pass += 1
+            if removed_pass == 0:
+                break
+            removed += removed_pass
+        if removed:
+            self.conn.commit()
+        return removed
+
     def dedupe_bookmark_links_by_url(self) -> int:
         """Remove duplicate bookmark links and merge duplicate moz_places rows by URL.
 

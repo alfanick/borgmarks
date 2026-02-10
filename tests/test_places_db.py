@@ -232,3 +232,21 @@ def test_prune_regular_links_not_in_urls_removes_stale_and_tag_refs(tmp_path: Pa
 
         # Tag references for removed place fk should be gone as well.
         assert db.read_tag("video") == []
+
+
+def test_sync_link_tags_replaces_existing_set_and_prunes_empty_tag_folders(tmp_path: Path):
+    db_path = tmp_path / "places.sqlite"
+    _mk_places_db(db_path)
+    with PlacesDB(db_path, readonly=False) as db:
+        link = next(x for x in db.read_all(include_tag_links=False) if x.url == "https://fstoppers.com/camera")
+        added, removed = db.sync_link_tags(link.id, ["camera"])
+        assert added == 1
+        assert removed >= 1
+        assert db.read_tag("video") == []
+        assert db.read_tag("camera")
+
+        # Remove all tags from this link and ensure empty tag folders can be pruned.
+        _added2, removed2 = db.sync_link_tags(link.id, [])
+        assert removed2 >= 1
+        removed_folders = db.prune_empty_folders()
+        assert removed_folders >= 1

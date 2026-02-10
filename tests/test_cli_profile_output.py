@@ -4,6 +4,7 @@ import json
 
 from borgmarks.cache_sqlite import CacheEntry, init_cache, load_entries, upsert_entries
 from borgmarks.cli import _url_identity, main
+from borgmarks.places_db import PlacesDB
 
 
 def _mk_profile(profile: Path) -> None:
@@ -397,6 +398,47 @@ def test_cli_apply_firefox_persists_links_even_if_folder_emoji_fails(tmp_path: P
             ).fetchone()[0]
         )
     assert count >= 3
+
+
+def test_cli_apply_firefox_second_run_does_not_grow_bookmark_count(tmp_path: Path):
+    profile = tmp_path / "profile"
+    _mk_profile(profile)
+    ios = Path(__file__).parent / "fixtures" / "sample_bookmarks.html"
+
+    rc1 = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios),
+            "--firefox-profile",
+            str(profile),
+            "--apply-firefox",
+            "--no-openai",
+            "--no-fetch",
+            "--skip-cache",
+        ]
+    )
+    assert rc1 == 0
+    with PlacesDB(profile / "places.sqlite", readonly=True) as db:
+        c1 = len(db.read_all(include_tag_links=False))
+
+    rc2 = main(
+        [
+            "organize",
+            "--ios-html",
+            str(ios),
+            "--firefox-profile",
+            str(profile),
+            "--apply-firefox",
+            "--no-openai",
+            "--no-fetch",
+        ]
+    )
+    assert rc2 == 0
+    with PlacesDB(profile / "places.sqlite", readonly=True) as db:
+        c2 = len(db.read_all(include_tag_links=False))
+
+    assert c2 == c1
 
 
 def test_cli_no_openai_no_fetch_second_run_is_stable_with_cache(tmp_path: Path):
